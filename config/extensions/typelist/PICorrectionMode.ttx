@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<!DOCTYPE typelist PUBLIC "-//Guidewire//DTD Typelist 1.0//EN" "typelist.dtd">
+<typelist name="PICorrectionMode" desc="How an issue is handled" final="false">
+  <typecode code="Auto" name="Auto" priority="1"/>
+  <typecode code="Suggested" name="Suggested" priority="2"/>
+  <typecode code="Manual" name="Manual" priority="3"/>
+</typelist>

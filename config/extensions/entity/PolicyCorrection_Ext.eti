@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<!DOCTYPE entity PUBLIC "-//Guidewire//DTD Product Model 1.0//EN" "productmodel.dtd">
+<entity
+  name="PolicyCorrection_Ext"
+  table="pc_policycorr_ext"
+  type="retireable"
+  desc="Recorded corrections for policy integrity issues">
+
+  <column name="Policy" nullok="false" type="foreignkey" fkentity="Policy"/>
+  <column name="Issue" nullok="false" type="foreignkey" fkentity="PolicyIssue_Ext"/>
+
+  <column name="CorrectionType" nullok="false" type="varchar" size="50"/>
+  <column name="ActionTaken" nullok="false" type="varchar" size="255"/>
+  <column name="OldValue" nullok="true" type="varchar" size="255"/>
+  <column name="NewValue" nullok="true" type="varchar" size="255"/>
+
+  <column name="CorrectedAt" nullok="false" type="datetime"/>
+  <column name="CorrectedBy" nullok="false" type="varchar" size="80"/>
+
+</entity>

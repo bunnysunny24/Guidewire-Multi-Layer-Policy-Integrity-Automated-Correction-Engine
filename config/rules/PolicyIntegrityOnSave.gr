@@ -1,0 +1,9 @@
+# Placeholder rule binding for PolicyCenter save lifecycle.
+# Bind this rule to policy pre-update or pre-quote event.
+# Rule action should call:
+#   com.guidewire.policyintegrity.PolicyIntegritySaveHook.onPolicyPreUpdate(policy)
+#
+# Rule conditions typically include:
+# - policy is not null
+# - policy period is editable
+# - integrity feature flag enabled

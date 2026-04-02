@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<PCF
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:noNamespaceSchemaLocation="pcf.xsd">
+
+  <Screen id="PolicyIntegrityDashboard" title="Policy Integrity Dashboard">
+    <Variable name="Policy" type="Policy"/>
+
+    <PanelRef id="IntegritySummaryPanel">
+      <PanelSet>
+        <InputColumn>
+          <Label id="IntegrityScoreLabel" value="Integrity Score"/>
+          <Value id="IntegrityScoreValue" value="${Policy.IntegrityScore}"/>
+          <Label id="IntegrityBeforeLabel" value="Before Score"/>
+          <Value id="IntegrityBeforeValue" value="${Policy.IntegrityScoreBefore}"/>
+          <Label id="IntegrityAfterLabel" value="After Score"/>
+          <Value id="IntegrityAfterValue" value="${Policy.IntegrityScoreAfter}"/>
+          <Label id="IntegrityRunLabel" value="Last Run"/>
+          <Value id="IntegrityRunValue" value="${Policy.IntegrityLastRunAt}"/>
+        </InputColumn>
+      </PanelSet>
+    </PanelRef>
+
+    <ListView id="IssueList" source="Policy.IntegrityIssues" title="Issues">
+      <RowIterator>
+        <Column id="IssueTypeCol" value="${IssueType}" label="Type"/>
+        <Column id="IssueSeverityCol" value="${Severity}" label="Severity"/>
+        <Column id="IssueRuleCol" value="${RuleId}" label="Rule"/>
+        <Column id="IssueModeCol" value="${CorrectionMode}" label="Mode"/>
+        <Column id="IssueStatusCol" value="${Status}" label="Status"/>
+      </RowIterator>
+    </ListView>
+
+    <ListView id="CorrectionList" source="Policy.IntegrityCorrections" title="Corrections">
+      <RowIterator>
+        <Column id="CorrectionTypeCol" value="${CorrectionType}" label="Correction Type"/>
+        <Column id="OldValueCol" value="${OldValue}" label="Old Value"/>
+        <Column id="NewValueCol" value="${NewValue}" label="New Value"/>
+        <Column id="CorrectedByCol" value="${CorrectedBy}" label="Corrected By"/>
+        <Column id="CorrectedAtCol" value="${CorrectedAt}" label="Corrected At"/>
+      </RowIterator>
+    </ListView>
+  </Screen>
+</PCF>

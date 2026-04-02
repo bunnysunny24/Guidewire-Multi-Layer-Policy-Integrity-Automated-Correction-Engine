@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<!DOCTYPE typelist PUBLIC "-//Guidewire//DTD Typelist 1.0//EN" "typelist.dtd">
+<typelist name="PISeverity" desc="Policy integrity severity scale" final="false">
+  <typecode code="Critical" name="Critical" priority="1"/>
+  <typecode code="High" name="High" priority="2"/>
+  <typecode code="Medium" name="Medium" priority="3"/>
+  <typecode code="Low" name="Low" priority="4"/>
+</typelist>

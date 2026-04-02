@@ -1,0 +1,14 @@
+{
+  "name": "guidewire-policy-integrity-sim",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Simulated Guidewire multi-layer policy integrity and correction engine",
+  "main": "server/app.js",
+  "scripts": {
+    "start": "node server/app.js",
+    "demo": "node project/demo/DemoRunner.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

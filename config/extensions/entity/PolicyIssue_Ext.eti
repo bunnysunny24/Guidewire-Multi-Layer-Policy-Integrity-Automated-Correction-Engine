@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<!DOCTYPE entity PUBLIC "-//Guidewire//DTD Product Model 1.0//EN" "productmodel.dtd">
+<entity
+  name="PolicyIssue_Ext"
+  table="pc_policyissue_ext"
+  type="retireable"
+  desc="Detected integrity issues for a policy">
+
+  <column name="Policy" nullok="false" type="foreignkey" fkentity="Policy"/>
+  <column name="IssueType" nullok="false" type="varchar" size="100"/>
+  <column name="Description" nullok="false" type="varchar" size="255"/>
+  <column name="Severity" nullok="false" type="typekey" typelist="PISeverity"/>
+  <column name="RuleId" nullok="false" type="varchar" size="100"/>
+
+  <column name="AutoFixable" nullok="false" type="bit" default="false"/>
+  <column name="CorrectionMode" nullok="false" type="typekey" typelist="PICorrectionMode"/>
+  <column name="CorrectionConfidence" nullok="true" type="decimal" scale="2" precision="5"/>
+  <column name="AlreadyCorrected" nullok="false" type="bit" default="false"/>
+
+  <column name="DetectedAt" nullok="false" type="datetime"/>
+  <column name="DetectedBy" nullok="false" type="varchar" size="80"/>
+
+  <column name="Status" nullok="false" type="varchar" size="20" default="Open"/>
+  <column name="IssueKey" nullok="false" type="varchar" size="150"/>
+
+</entity>

@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Guidewire-like Policy Integrity Simulation</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useState, useEffect } = React;
+
+      const defaultForm = {
+        premium: -500,
+        coverage: 200000,
+        status: "Active",
+        hasCustomer: true,
+        customerName: "Aarav Sharma",
+        customerAddress: "12 Green Street",
+        policyAddress: "",
+        duplicateCustomerCandidate: true,
+        billingActive: false,
+        configValid: true,
+        actor: "ui.user"
+      };
+
+      function App() {
+        const [form, setForm] = useState(defaultForm);
+        const [result, setResult] = useState(null);
+        const [loading, setLoading] = useState(false);
+        const [apiMessage, setApiMessage] = useState("Ready");
+        const [demoCases, setDemoCases] = useState([]);
+
+        useEffect(() => {
+          fetch("/api/demo-cases")
+            .then((res) => res.json())
+            .then((data) => setDemoCases(data.cases || []))
+            .catch(() => setDemoCases([]));
+        }, []);
+
+        function updateField(key, value) {
+          setForm((prev) => ({ ...prev, [key]: value }));
+        }
+
+        function loadCase(payload) {
+          setForm((prev) => ({ ...prev, ...payload }));
+          setApiMessage("Demo case loaded");
+        }
+
+        async function runSimulation(e) {
+          e.preventDefault();
+          setLoading(true);
+          setApiMessage("Running integrity simulation...");
+
+          try {
+            const response = await fetch("/api/validate-policy", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(form)
+            });
+
+            if (!response.ok) {
+              throw new Error("API request failed");
+            }
+
+            const data = await response.json();
+            setResult(data);
+            setApiMessage("Simulation complete");
+          } catch (error) {
+            setApiMessage("Failed to run simulation");
+          } finally {
+            setLoading(false);
+          }
+        }
+
+        const delta = result ? result.scoreAfter - result.scoreBefore : 0;
+
+        return (
+          <div className="page">
+            <header className="hero">
+              <h1>Policy Integrity Console</h1>
+              <p>Guidewire-like simulation: Detect -> Classify -> Correct -> Re-validate -> Score -> Audit</p>
+            </header>
+
+            <div className="layout">
+              <section className="panel">
+                <h2>Policy Input</h2>
+                <form onSubmit={runSimulation}>
+                  <div className="form-grid">
+                    <div className="field">
+                      <label>Premium</label>
+                      <input type="number" value={form.premium} onChange={(e) => updateField("premium", Number(e.target.value))} />
+                    </div>
+                    <div className="field">
+                      <label>Coverage</label>
+                      <input type="number" value={form.coverage} onChange={(e) => updateField("coverage", Number(e.target.value))} />
+                    </div>
+                    <div className="field">
+                      <label>Status</label>
+                      <select value={form.status} onChange={(e) => updateField("status", e.target.value)}>
+                        <option value="Active">Active</option>
+                        <option value="Cancelled">Cancelled</option>
+                      </select>
+                    </div>
+                    <div className="field">
+                      <label>Actor</label>
+                      <input value={form.actor} onChange={(e) => updateField("actor", e.target.value)} />
+                    </div>
+                    <div className="field">
+                      <label>Customer Name</label>
+                      <input value={form.customerName} onChange={(e) => updateField("customerName", e.target.value)} disabled={!form.hasCustomer} />
+                    </div>
+                    <div className="field">
+                      <label>Customer Address</label>
+                      <input value={form.customerAddress} onChange={(e) => updateField("customerAddress", e.target.value)} disabled={!form.hasCustomer} />
+                    </div>
+                    <div className="field">
+                      <label>Policy Address</label>
+                      <input value={form.policyAddress} onChange={(e) => updateField("policyAddress", e.target.value)} placeholder="optional" />
+                    </div>
+
+                    <div className="toggle-row">
+                      <label className="toggle">
+                        <input type="checkbox" checked={form.hasCustomer} onChange={(e) => updateField("hasCustomer", e.target.checked)} /> Has customer linked
+                      </label>
+                      <label className="toggle">
+                        <input type="checkbox" checked={form.duplicateCustomerCandidate} onChange={(e) => updateField("duplicateCustomerCandidate", e.target.checked)} /> Duplicate candidate
+                      </label>
+                      <label className="toggle">
+                        <input type="checkbox" checked={form.billingActive} onChange={(e) => updateField("billingActive", e.target.checked)} /> Billing active
+                      </label>
+                      <label className="toggle">
+                        <input type="checkbox" checked={form.configValid} onChange={(e) => updateField("configValid", e.target.checked)} /> Configuration valid
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="actions">
+                    <button className="btn-primary" type="submit" disabled={loading}>{loading ? "Running..." : "Save Policy (Simulated)"}</button>
+                    <button className="btn-secondary" type="button" onClick={() => { setForm(defaultForm); setResult(null); }}>Reset</button>
+                  </div>
+                </form>
+
+                <div className="actions">
+                  {demoCases.map((item) => (
+                    <button key={item.name} className="btn-ghost" type="button" onClick={() => loadCase(item.payload)}>{item.name}</button>
+                  ))}
+                </div>
+
+                <p className="small-note">Status: {apiMessage}</p>
+              </section>
+
+              <section className="panel">
+                <h2>Policy Integrity Dashboard</h2>
+                {!result && <p>Run simulation to populate dashboard.</p>}
+
+                {result && (
+                  <>
+                    <div className="score-strip">
+                      <div className="card">
+                        <div className="k">Before</div>
+                        <div className="v">{result.scoreBefore}</div>
+                      </div>
+                      <div className="card">
+                        <div className="k">After</div>
+                        <div className="v">{result.scoreAfter}</div>
+                      </div>
+                      <div className="card">
+                        <div className="k">Delta</div>
+                        <div className="v">{delta > 0 ? `+${delta}` : delta}</div>
+                      </div>
+                      <div className="card">
+                        <div className="k">Proceed</div>
+                        <div className={`v ${result.canProceed ? "badge-ok" : "badge-blocked"}`}>
+                          {result.canProceed ? "YES" : "BLOCKED"}
+                        </div>
+                      </div>
+                    </div>
+
+                    <h3>Issues</h3>
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Rule</th>
+                            <th>Severity</th>
+                            <th>Mode</th>
+                            <th>Status</th>
+                            <th>Description</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {result.issues.map((issue, idx) => (
+                            <tr key={`${issue.ruleId}-${idx}`}>
+                              <td>{issue.ruleId}</td>
+                              <td>{issue.severity}</td>
+                              <td>{issue.correctionMode}</td>
+                              <td>{issue.status}</td>
+                              <td>{issue.description}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <h3>Corrections</h3>
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Type</th>
+                            <th>Action</th>
+                            <th>Old</th>
+                            <th>New</th>
+                            <th>By</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {result.corrections.length === 0 && (
+                            <tr><td colSpan="5">No corrections applied</td></tr>
+                          )}
+                          {result.corrections.map((c, idx) => (
+                            <tr key={`${c.ruleId}-${idx}`}>
+                              <td>{c.correctionType}</td>
+                              <td>{c.actionTaken}</td>
+                              <td>{c.oldValue}</td>
+                              <td>{c.newValue}</td>
+                              <td>{c.correctedBy}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <p className="small-note">
+                      Summary: Open {result.summary.open}, Resolved {result.summary.resolved}, Suggested {result.summary.suggested}, Blocked {result.summary.blocked}
+                    </p>
+                  </>
+                )}
+              </section>
+            </div>
+          </div>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+    </script>
+  </body>
+</html>

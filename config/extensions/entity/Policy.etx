@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<!DOCTYPE extension PUBLIC "-//Guidewire//DTD Entity Extension 1.0//EN" "entityextension.dtd">
+<extension entityName="Policy">
+
+  <array name="IntegrityIssues" arrayentity="PolicyIssue_Ext" foreignkey="Policy"/>
+  <array name="IntegrityCorrections" arrayentity="PolicyCorrection_Ext" foreignkey="Policy"/>
+
+  <column name="IntegrityScore" nullok="true" type="int"/>
+  <column name="IntegrityScoreBefore" nullok="true" type="int"/>
+  <column name="IntegrityScoreAfter" nullok="true" type="int"/>
+  <column name="IntegrityLastRunAt" nullok="true" type="datetime"/>
+
+</extension>
