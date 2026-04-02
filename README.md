@@ -20,6 +20,17 @@ Detect -> Classify -> Correct -> Re-validate once -> Score -> Audit
 
 ## What Is Implemented
 
+### Platform modules (UI)
+
+- Dashboard
+- Policy Workbench
+- Validation Center
+- Correction Center
+- Audit Logs
+- Rule Configuration
+
+The platform now supports multi-policy workflows, rule toggles/severity overrides, cross-policy issue filtering, suggestion approval or rejection, timeline audit views, and chart-driven operational visibility.
+
 ### 1) Local simulation (fully runnable)
 
 - Frontend dashboard and policy input form:
@@ -117,6 +128,19 @@ or
 - GET /api/health
 - GET /api/demo-cases
 - POST /api/validate-policy
+
+### Platform APIs
+
+- GET /api/platform/bootstrap
+- POST /api/platform/policies
+- PUT /api/platform/policies/:policyId
+- POST /api/platform/policies/:policyId/run
+- GET /api/platform/issues
+- GET /api/platform/corrections
+- GET /api/platform/audits
+- GET /api/platform/rules
+- PATCH /api/platform/rules/:ruleId
+- POST /api/platform/policies/:policyId/issues/:issueKey/action
 
 ## Required Demo Cases
 

@@ -3,17 +3,27 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Guidewire-like Policy Integrity Simulation</title>
+    <title>Policy Integrity Management Platform</title>
     <link rel="stylesheet" href="/styles.css" />
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   </head>
   <body>
     <div id="root"></div>
 
     <script type="text/babel">
-      const { useState, useEffect } = React;
+      const { useState, useEffect, useMemo, useRef } = React;
+
+      const modules = [
+        { key: "dashboard", label: "Dashboard" },
+        { key: "workbench", label: "Policy Workbench" },
+        { key: "validation", label: "Validation Center" },
+        { key: "corrections", label: "Correction Center" },
+        { key: "audit", label: "Audit Logs" },
+        { key: "rules", label: "Rule Configuration" }
+      ];
 
       const defaultForm = {
         premium: -500,
@@ -29,221 +39,576 @@
         actor: "ui.user"
       };
 
-      function App() {
-        const [form, setForm] = useState(defaultForm);
-        const [result, setResult] = useState(null);
-        const [loading, setLoading] = useState(false);
-        const [apiMessage, setApiMessage] = useState("Ready");
-        const [demoCases, setDemoCases] = useState([]);
+      function wait(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      function SeverityBadge({ value }) {
+        return <span className={`badge sev-${String(value || "").toLowerCase()}`}>{value}</span>;
+      }
+
+      function StatusBadge({ value }) {
+        return <span className={`badge st-${String(value || "").toLowerCase()}`}>{value}</span>;
+      }
+
+      function moduleIcon(moduleName = "") {
+        const module = moduleName.toLowerCase();
+        if (module.includes("detect") || module.includes("validation")) {
+          return "🔍";
+        }
+        if (module.includes("correct")) {
+          return "🛠️";
+        }
+        if (module.includes("score")) {
+          return "📊";
+        }
+        if (module.includes("audit")) {
+          return "🧾";
+        }
+        if (module.includes("rules")) {
+          return "⚙️";
+        }
+        return "•";
+      }
+
+      function ChartPanel({ chartId, type, labels, values, title }) {
+        const canvasRef = useRef(null);
 
         useEffect(() => {
-          fetch("/api/demo-cases")
-            .then((res) => res.json())
-            .then((data) => setDemoCases(data.cases || []))
-            .catch(() => setDemoCases([]));
+          if (!canvasRef.current || !window.Chart) {
+            return undefined;
+          }
+
+          const chart = new window.Chart(canvasRef.current, {
+            type,
+            data: {
+              labels,
+              datasets: [
+                {
+                  label: title,
+                  data: values,
+                  backgroundColor: [
+                    "#0f766e",
+                    "#0369a1",
+                    "#65a30d",
+                    "#b45309",
+                    "#b91c1c"
+                  ],
+                  borderColor: "#ffffff",
+                  borderWidth: 1
+                }
+              ]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: {
+                legend: { display: type === "pie" || type === "doughnut" }
+              }
+            }
+          });
+
+          return () => chart.destroy();
+        }, [type, labels.join("|"), values.join("|")]);
+
+        return (
+          <div className="chart-card">
+            <div className="chart-title">{title}</div>
+            <div className="chart-body"><canvas id={chartId} ref={canvasRef}></canvas></div>
+          </div>
+        );
+      }
+
+      function App() {
+        const [activeModule, setActiveModule] = useState("dashboard");
+        const [form, setForm] = useState(defaultForm);
+        const [policies, setPolicies] = useState([]);
+        const [rules, setRules] = useState([]);
+        const [auditEvents, setAuditEvents] = useState([]);
+        const [issues, setIssues] = useState([]);
+        const [corrections, setCorrections] = useState([]);
+        const [selectedPolicyId, setSelectedPolicyId] = useState("");
+        const [runResult, setRunResult] = useState(null);
+        const [statusText, setStatusText] = useState("Ready");
+        const [running, setRunning] = useState(false);
+        const [workflowStep, setWorkflowStep] = useState(-1);
+        const [workflowLogs, setWorkflowLogs] = useState([]);
+        const [autoRerunRules, setAutoRerunRules] = useState(true);
+        const [validationFilters, setValidationFilters] = useState({
+          severity: "",
+          ruleId: "",
+          policyId: "",
+          search: ""
+        });
+
+        useEffect(() => {
+          bootstrap();
+          fetchIssues();
+          fetchCorrections();
+          fetchAudits();
         }, []);
 
-        function updateField(key, value) {
-          setForm((prev) => ({ ...prev, [key]: value }));
-        }
-
-        function loadCase(payload) {
-          setForm((prev) => ({ ...prev, ...payload }));
-          setApiMessage("Demo case loaded");
-        }
-
-        async function runSimulation(e) {
-          e.preventDefault();
-          setLoading(true);
-          setApiMessage("Running integrity simulation...");
-
-          try {
-            const response = await fetch("/api/validate-policy", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(form)
-            });
-
-            if (!response.ok) {
-              throw new Error("API request failed");
-            }
-
-            const data = await response.json();
-            setResult(data);
-            setApiMessage("Simulation complete");
-          } catch (error) {
-            setApiMessage("Failed to run simulation");
-          } finally {
-            setLoading(false);
+        async function bootstrap() {
+          const res = await fetch("/api/platform/bootstrap");
+          const data = await res.json();
+          setPolicies(data.policies || []);
+          setRules(data.rules || []);
+          setAuditEvents(data.auditEvents || []);
+          if (!selectedPolicyId && data.policies && data.policies.length > 0) {
+            setSelectedPolicyId(data.policies[0].policyId);
+            setForm(data.policies[0].input);
           }
         }
 
-        const delta = result ? result.scoreAfter - result.scoreBefore : 0;
+        async function fetchIssues(filters = validationFilters) {
+          const params = new URLSearchParams();
+          Object.entries(filters).forEach(([k, v]) => {
+            if (v) {
+              params.append(k, v);
+            }
+          });
+          const res = await fetch(`/api/platform/issues?${params.toString()}`);
+          const data = await res.json();
+          setIssues(data.issues || []);
+        }
 
-        return (
-          <div className="page">
-            <header className="hero">
-              <h1>Policy Integrity Console</h1>
-              <p>Guidewire-like simulation: Detect -> Classify -> Correct -> Re-validate -> Score -> Audit</p>
-            </header>
+        async function fetchCorrections() {
+          const res = await fetch("/api/platform/corrections");
+          const data = await res.json();
+          setCorrections(data.corrections || []);
+        }
 
-            <div className="layout">
-              <section className="panel">
-                <h2>Policy Input</h2>
-                <form onSubmit={runSimulation}>
-                  <div className="form-grid">
-                    <div className="field">
-                      <label>Premium</label>
-                      <input type="number" value={form.premium} onChange={(e) => updateField("premium", Number(e.target.value))} />
-                    </div>
-                    <div className="field">
-                      <label>Coverage</label>
-                      <input type="number" value={form.coverage} onChange={(e) => updateField("coverage", Number(e.target.value))} />
-                    </div>
-                    <div className="field">
-                      <label>Status</label>
-                      <select value={form.status} onChange={(e) => updateField("status", e.target.value)}>
-                        <option value="Active">Active</option>
-                        <option value="Cancelled">Cancelled</option>
-                      </select>
-                    </div>
-                    <div className="field">
-                      <label>Actor</label>
-                      <input value={form.actor} onChange={(e) => updateField("actor", e.target.value)} />
-                    </div>
-                    <div className="field">
-                      <label>Customer Name</label>
-                      <input value={form.customerName} onChange={(e) => updateField("customerName", e.target.value)} disabled={!form.hasCustomer} />
-                    </div>
-                    <div className="field">
-                      <label>Customer Address</label>
-                      <input value={form.customerAddress} onChange={(e) => updateField("customerAddress", e.target.value)} disabled={!form.hasCustomer} />
-                    </div>
-                    <div className="field">
-                      <label>Policy Address</label>
-                      <input value={form.policyAddress} onChange={(e) => updateField("policyAddress", e.target.value)} placeholder="optional" />
-                    </div>
+        async function fetchAudits(policyId = "") {
+          const q = policyId ? `?policyId=${policyId}` : "";
+          const res = await fetch(`/api/platform/audits${q}`);
+          const data = await res.json();
+          setAuditEvents(data.events || []);
+        }
 
-                    <div className="toggle-row">
-                      <label className="toggle">
-                        <input type="checkbox" checked={form.hasCustomer} onChange={(e) => updateField("hasCustomer", e.target.checked)} /> Has customer linked
-                      </label>
-                      <label className="toggle">
-                        <input type="checkbox" checked={form.duplicateCustomerCandidate} onChange={(e) => updateField("duplicateCustomerCandidate", e.target.checked)} /> Duplicate candidate
-                      </label>
-                      <label className="toggle">
-                        <input type="checkbox" checked={form.billingActive} onChange={(e) => updateField("billingActive", e.target.checked)} /> Billing active
-                      </label>
-                      <label className="toggle">
-                        <input type="checkbox" checked={form.configValid} onChange={(e) => updateField("configValid", e.target.checked)} /> Configuration valid
-                      </label>
+        function setField(key, value) {
+          setForm((prev) => ({ ...prev, [key]: value }));
+        }
+
+        async function createPolicy() {
+          const response = await fetch("/api/platform/policies", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(form)
+          });
+          const created = await response.json();
+          setSelectedPolicyId(created.policyId);
+          setStatusText(`Policy created: ${created.policyId}`);
+          await bootstrap();
+          await fetchIssues();
+          await fetchCorrections();
+          await fetchAudits();
+        }
+
+        async function updatePolicy() {
+          if (!selectedPolicyId) {
+            setStatusText("Select a policy first");
+            return;
+          }
+          await fetch(`/api/platform/policies/${selectedPolicyId}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(form)
+          });
+          setStatusText(`Policy updated: ${selectedPolicyId}`);
+          await bootstrap();
+        }
+
+        async function runPolicy(policyId = selectedPolicyId) {
+          if (!policyId) {
+            setStatusText("Create or select a policy first");
+            return;
+          }
+          setRunning(true);
+          setWorkflowLogs([]);
+          setStatusText("Running platform workflow...");
+
+          try {
+            const steps = [
+              "Running validation layer checks",
+              "Applying correction governance",
+              "Performing single re-validation",
+              "Calculating weighted score",
+              "Writing audit timeline"
+            ];
+
+            for (let i = 0; i < steps.length; i += 1) {
+              setWorkflowStep(i);
+              setWorkflowLogs((prev) => [...prev, steps[i]]);
+              await wait(220);
+            }
+
+            const response = await fetch(`/api/platform/policies/${policyId}/run`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ actor: form.actor || "ui.user" })
+            });
+
+            if (!response.ok) {
+              throw new Error("Run failed");
+            }
+
+            const data = await response.json();
+            setRunResult(data);
+            setStatusText(`Run complete for ${policyId}`);
+            setWorkflowLogs((prev) => [...prev, ...data.logs.map((l) => `${l.step}: ${l.message}`)]);
+            await bootstrap();
+            await fetchIssues();
+            await fetchCorrections();
+            await fetchAudits(policyId);
+          } catch (error) {
+            setStatusText("Simulation failed");
+          } finally {
+            setRunning(false);
+            setWorkflowStep(-1);
+          }
+        }
+
+        async function updateRule(ruleId, patch) {
+          await fetch(`/api/platform/rules/${ruleId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(patch)
+          });
+          await bootstrap();
+          await fetchAudits();
+          setStatusText(`Rule updated: ${ruleId}`);
+          if (autoRerunRules && selectedPolicyId) {
+            await runPolicy(selectedPolicyId);
+          }
+        }
+
+        async function actOnSuggestion(policyId, issueKey, action) {
+          await fetch(`/api/platform/policies/${policyId}/issues/${issueKey}/action`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action })
+          });
+          await fetchIssues();
+          await bootstrap();
+          await fetchAudits(policyId);
+          setStatusText(`Suggestion ${action}d`);
+        }
+
+        function selectPolicy(policy) {
+          setSelectedPolicyId(policy.policyId);
+          setForm(policy.input);
+          setStatusText(`Selected ${policy.policyId}`);
+        }
+
+        const dashboard = useMemo(() => {
+          const total = policies.length;
+          const avgScore = total ? Math.round(policies.reduce((sum, p) => sum + (p.scoreAfter || 0), 0) / total) : 0;
+          const valid = policies.filter((p) => p.status === "VALID").length;
+          const corrected = policies.filter((p) => p.status === "CORRECTED").length;
+          const invalid = policies.filter((p) => p.status === "INVALID").length;
+          const criticalIssues = issues.filter((i) => i.severity === "Critical").length;
+          const autoFixableCount = issues.filter((i) => i.autoFixable).length;
+          const autoFixedCount = issues.filter((i) => i.autoFixable && i.status === "Resolved").length;
+          const autoFixRate = autoFixableCount > 0 ? Math.round((autoFixedCount / autoFixableCount) * 100) : 0;
+          const severityBuckets = { Critical: 0, High: 0, Medium: 0, Low: 0 };
+          issues.forEach((i) => {
+            if (severityBuckets[i.severity] != null) {
+              severityBuckets[i.severity] += 1;
+            }
+          });
+          return {
+            total,
+            avgScore,
+            criticalIssues,
+            autoFixRate,
+            valid,
+            corrected,
+            invalid,
+            severityBuckets
+          };
+        }, [policies, issues]);
+
+        const workflowNames = ["Detect", "Classify", "Correct", "Re-validate", "Score", "Audit"];
+
+        const renderDashboard = () => (
+          <div className="module-grid">
+            <div className="kpi-row">
+              <div className="kpi"><span>Total Policies</span><strong>{dashboard.total}</strong></div>
+              <div className="kpi"><span>Avg Integrity Score</span><strong>{dashboard.avgScore}</strong></div>
+              <div className="kpi"><span>Critical Issues</span><strong>{dashboard.criticalIssues}</strong></div>
+              <div className="kpi"><span>Auto Fix Rate</span><strong>{dashboard.autoFixRate}%</strong></div>
+            </div>
+            <div className="before-after-panel">
+              <div className="panel stat-panel">
+                <h3>Before vs After (Latest Run)</h3>
+                {runResult ? (
+                  <>
+                    <div className="score-compare">
+                      <div>
+                        <div className="small-note">Before</div>
+                        <div className="score-big">{runResult.scoreBefore}</div>
+                      </div>
+                      <div className="arrow">→</div>
+                      <div>
+                        <div className="small-note">After</div>
+                        <div className="score-big">{runResult.scoreAfter}</div>
+                      </div>
+                      <div>
+                        <div className="small-note">Delta</div>
+                        <div className="score-delta">{runResult.scoreAfter - runResult.scoreBefore >= 0 ? `+${runResult.scoreAfter - runResult.scoreBefore}` : runResult.scoreAfter - runResult.scoreBefore}</div>
+                      </div>
                     </div>
-                  </div>
+                    <div className="small-note">Policy: {runResult.policy?.policyId || selectedPolicyId || "-"}</div>
+                  </>
+                ) : (
+                  <div className="small-note">Run a policy from Workbench to show before/after proof.</div>
+                )}
+              </div>
+            </div>
+            <div className="chart-grid">
+              <ChartPanel chartId="severityPie" type="pie" title="Severity Distribution" labels={["Critical", "High", "Medium", "Low"]} values={[
+                dashboard.severityBuckets.Critical,
+                dashboard.severityBuckets.High,
+                dashboard.severityBuckets.Medium,
+                dashboard.severityBuckets.Low
+              ]} />
+              <ChartPanel chartId="statusBars" type="bar" title="Policy Status" labels={["VALID", "CORRECTED", "INVALID"]} values={[
+                dashboard.valid,
+                dashboard.corrected,
+                dashboard.invalid
+              ]} />
+              <ChartPanel chartId="scoreTrend" type="line" title="Score Trend" labels={policies.slice(0, 8).map((p) => p.policyId)} values={policies.slice(0, 8).map((p) => p.scoreAfter || 0)} />
+              <ChartPanel chartId="issuesTrend" type="line" title="Issues Trend" labels={policies.slice(0, 8).map((p) => p.policyId)} values={policies.slice(0, 8).map((p) => p.issueCount || 0)} />
+            </div>
+          </div>
+        );
 
-                  <div className="actions">
-                    <button className="btn-primary" type="submit" disabled={loading}>{loading ? "Running..." : "Save Policy (Simulated)"}</button>
-                    <button className="btn-secondary" type="button" onClick={() => { setForm(defaultForm); setResult(null); }}>Reset</button>
-                  </div>
-                </form>
+        const renderWorkbench = () => (
+          <div className="module-grid two-col">
+            <section className="panel">
+              <h2>Policy Form</h2>
+              <div className="form-grid">
+                <div className="field"><label>Premium</label><input type="number" value={form.premium} onChange={(e) => setField("premium", Number(e.target.value))} /></div>
+                <div className="field"><label>Coverage</label><input type="number" value={form.coverage} onChange={(e) => setField("coverage", Number(e.target.value))} /></div>
+                <div className="field"><label>Status</label><select value={form.status} onChange={(e) => setField("status", e.target.value)}><option>Active</option><option>Cancelled</option></select></div>
+                <div className="field"><label>Actor</label><input value={form.actor} onChange={(e) => setField("actor", e.target.value)} /></div>
+                <div className="field"><label>Customer Name</label><input value={form.customerName} onChange={(e) => setField("customerName", e.target.value)} disabled={!form.hasCustomer} /></div>
+                <div className="field"><label>Customer Address</label><input value={form.customerAddress} onChange={(e) => setField("customerAddress", e.target.value)} disabled={!form.hasCustomer} /></div>
+                <div className="field"><label>Policy Address</label><input value={form.policyAddress} onChange={(e) => setField("policyAddress", e.target.value)} /></div>
+                <div className="field"><label>Has Customer</label><input type="checkbox" checked={form.hasCustomer} onChange={(e) => setField("hasCustomer", e.target.checked)} /></div>
+                <div className="field"><label>Duplicate Candidate</label><input type="checkbox" checked={form.duplicateCustomerCandidate} onChange={(e) => setField("duplicateCustomerCandidate", e.target.checked)} /></div>
+                <div className="field"><label>Billing Active</label><input type="checkbox" checked={form.billingActive} onChange={(e) => setField("billingActive", e.target.checked)} /></div>
+                <div className="field"><label>Configuration Valid</label><input type="checkbox" checked={form.configValid} onChange={(e) => setField("configValid", e.target.checked)} /></div>
+              </div>
+              <div className="actions">
+                <button className="btn-primary" onClick={createPolicy}>Create Policy</button>
+                <button className="btn-secondary" onClick={updatePolicy}>Update Selected</button>
+                <button className="btn-ghost" onClick={() => runPolicy() } disabled={running}>{running ? "Running..." : "Validate Policy"}</button>
+              </div>
 
-                <div className="actions">
-                  {demoCases.map((item) => (
-                    <button key={item.name} className="btn-ghost" type="button" onClick={() => loadCase(item.payload)}>{item.name}</button>
+              <div className="workflow-strip">
+                {workflowNames.map((step, idx) => (
+                  <div key={step} className={`flow-step ${workflowStep >= idx ? "active" : ""}`}>{step}</div>
+                ))}
+              </div>
+              <div className="log-box">
+                {workflowLogs.length === 0 && <div className="small-note">Workflow logs appear here during execution.</div>}
+                {workflowLogs.map((log, idx) => <div key={idx}>[{idx + 1}] {log}</div>)}
+              </div>
+            </section>
+
+            <section className="panel">
+              <h2>Policies</h2>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>ID</th><th>Status</th><th>Score</th><th>Run</th><th>Action</th></tr></thead>
+                  <tbody>
+                    {policies.map((p) => (
+                      <tr key={p.policyId}>
+                        <td>{p.policyId}</td>
+                        <td><StatusBadge value={p.status} /></td>
+                        <td>{p.scoreAfter}</td>
+                        <td>{p.lastRunAt ? new Date(p.lastRunAt).toLocaleTimeString() : "-"}</td>
+                        <td>
+                          <button className="mini" onClick={() => selectPolicy(p)}>Select</button>
+                          <button className="mini" onClick={() => runPolicy(p.policyId)}>Run</button>
+                        </td>
+                      </tr>
+                    ))}
+                    {policies.length === 0 && <tr><td colSpan="5">No policies yet</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        );
+
+        const renderValidationCenter = () => (
+          <section className="panel">
+            <h2>Validation Center</h2>
+            <div className="filters-row">
+              <input placeholder="Search by rule/policy/description" value={validationFilters.search} onChange={(e) => setValidationFilters((p) => ({ ...p, search: e.target.value }))} />
+              <select value={validationFilters.severity} onChange={(e) => setValidationFilters((p) => ({ ...p, severity: e.target.value }))}>
+                <option value="">All Severity</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option>
+              </select>
+              <select value={validationFilters.policyId} onChange={(e) => setValidationFilters((p) => ({ ...p, policyId: e.target.value }))}>
+                <option value="">All Policies</option>
+                {policies.map((p) => <option key={p.policyId} value={p.policyId}>{p.policyId}</option>)}
+              </select>
+              <button className="btn-ghost" onClick={() => fetchIssues(validationFilters)}>Apply Filters</button>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Policy</th><th>Rule</th><th>Severity</th><th>Status</th><th>Description</th></tr></thead>
+                <tbody>
+                  {issues.map((issue, idx) => (
+                    <tr key={`${issue.policyId}-${issue.ruleId}-${idx}`}>
+                      <td>{issue.policyId}</td>
+                      <td>{issue.ruleId}</td>
+                      <td><SeverityBadge value={issue.severity} /></td>
+                      <td><StatusBadge value={issue.status} /></td>
+                      <td>{issue.description}</td>
+                    </tr>
                   ))}
-                </div>
+                  {issues.length === 0 && <tr><td colSpan="5">No issues for selected filters</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        );
 
-                <p className="small-note">Status: {apiMessage}</p>
+        const renderCorrectionCenter = () => {
+          const suggestions = issues.filter((i) => i.status === "Suggested");
+          return (
+            <div className="module-grid two-col">
+              <section className="panel">
+                <h2>Corrections Applied</h2>
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>Policy</th><th>Type</th><th>Action</th><th>By</th></tr></thead>
+                    <tbody>
+                      {corrections.map((c, idx) => (
+                        <tr key={`${c.policyId}-${idx}`}>
+                          <td>{c.policyId}</td>
+                          <td>{c.correctionType}</td>
+                          <td>{c.actionTaken}</td>
+                          <td>{c.correctedBy}</td>
+                        </tr>
+                      ))}
+                      {corrections.length === 0 && <tr><td colSpan="4">No corrections yet</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
               </section>
 
               <section className="panel">
-                <h2>Policy Integrity Dashboard</h2>
-                {!result && <p>Run simulation to populate dashboard.</p>}
-
-                {result && (
-                  <>
-                    <div className="score-strip">
-                      <div className="card">
-                        <div className="k">Before</div>
-                        <div className="v">{result.scoreBefore}</div>
-                      </div>
-                      <div className="card">
-                        <div className="k">After</div>
-                        <div className="v">{result.scoreAfter}</div>
-                      </div>
-                      <div className="card">
-                        <div className="k">Delta</div>
-                        <div className="v">{delta > 0 ? `+${delta}` : delta}</div>
-                      </div>
-                      <div className="card">
-                        <div className="k">Proceed</div>
-                        <div className={`v ${result.canProceed ? "badge-ok" : "badge-blocked"}`}>
-                          {result.canProceed ? "YES" : "BLOCKED"}
-                        </div>
-                      </div>
-                    </div>
-
-                    <h3>Issues</h3>
-                    <div className="table-wrap">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Rule</th>
-                            <th>Severity</th>
-                            <th>Mode</th>
-                            <th>Status</th>
-                            <th>Description</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {result.issues.map((issue, idx) => (
-                            <tr key={`${issue.ruleId}-${idx}`}>
-                              <td>{issue.ruleId}</td>
-                              <td>{issue.severity}</td>
-                              <td>{issue.correctionMode}</td>
-                              <td>{issue.status}</td>
-                              <td>{issue.description}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    <h3>Corrections</h3>
-                    <div className="table-wrap">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Type</th>
-                            <th>Action</th>
-                            <th>Old</th>
-                            <th>New</th>
-                            <th>By</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {result.corrections.length === 0 && (
-                            <tr><td colSpan="5">No corrections applied</td></tr>
-                          )}
-                          {result.corrections.map((c, idx) => (
-                            <tr key={`${c.ruleId}-${idx}`}>
-                              <td>{c.correctionType}</td>
-                              <td>{c.actionTaken}</td>
-                              <td>{c.oldValue}</td>
-                              <td>{c.newValue}</td>
-                              <td>{c.correctedBy}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    <p className="small-note">
-                      Summary: Open {result.summary.open}, Resolved {result.summary.resolved}, Suggested {result.summary.suggested}, Blocked {result.summary.blocked}
-                    </p>
-                  </>
-                )}
+                <h2>Suggestion Queue</h2>
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>Policy</th><th>Rule</th><th>Status</th><th>Decision</th></tr></thead>
+                    <tbody>
+                      {suggestions.map((s, idx) => (
+                        <tr key={`${s.policyId}-${s.issueKey}-${idx}`}>
+                          <td>{s.policyId}</td>
+                          <td>{s.ruleId}</td>
+                          <td><StatusBadge value={s.status} /></td>
+                          <td>
+                            <button className="mini" onClick={() => actOnSuggestion(s.policyId, s.issueKey, "approve")}>Approve</button>
+                            <button className="mini danger" onClick={() => actOnSuggestion(s.policyId, s.issueKey, "reject")}>Reject</button>
+                          </td>
+                        </tr>
+                      ))}
+                      {suggestions.length === 0 && <tr><td colSpan="4">No suggestions pending</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
               </section>
             </div>
+          );
+        };
+
+        const renderAuditLogs = () => (
+          <section className="panel">
+            <h2>Audit Timeline</h2>
+            <div className="actions"><button className="btn-ghost" onClick={() => fetchAudits(selectedPolicyId)}>Filter Selected Policy</button><button className="btn-secondary" onClick={() => fetchAudits()}>Show All</button></div>
+            <div className="timeline">
+              {auditEvents.map((event) => (
+                <div className={`timeline-item mod-${String(event.module || "").toLowerCase().replace(/[^a-z]/g, "")}`} key={event.eventId}>
+                  <div className="t-time">{new Date(event.timestamp).toLocaleTimeString()}</div>
+                  <div>
+                    <div className="t-message"><span className="t-icon">{moduleIcon(event.module)}</span> [{event.module}] {event.message}</div>
+                    <div className="small-note">Policy: {event.policyId}</div>
+                  </div>
+                </div>
+              ))}
+              {auditEvents.length === 0 && <div className="small-note">No audit events yet.</div>}
+            </div>
+          </section>
+        );
+
+        const renderRuleConfig = () => (
+          <section className="panel">
+            <h2>Rule Configuration</h2>
+            <div className="actions">
+              <label className="inline-check"><input type="checkbox" checked={autoRerunRules} onChange={(e) => setAutoRerunRules(e.target.checked)} /> Auto re-run selected policy after rule change</label>
+              <button className="btn-ghost" onClick={() => runPolicy(selectedPolicyId)} disabled={!selectedPolicyId || running}>Re-run Selected Policy</button>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Rule</th><th>Layer</th><th>Severity</th><th>Enabled</th></tr></thead>
+                <tbody>
+                  {rules.map((rule) => (
+                    <tr key={rule.ruleId}>
+                      <td><strong>{rule.ruleId}</strong><div className="small-note">{rule.name}</div></td>
+                      <td>{rule.layer}</td>
+                      <td>
+                        <select value={rule.severity} onChange={(e) => updateRule(rule.ruleId, { severity: e.target.value })}>
+                          <option>Critical</option><option>High</option><option>Medium</option><option>Low</option>
+                        </select>
+                      </td>
+                      <td>
+                        <input type="checkbox" checked={rule.enabled} onChange={(e) => updateRule(rule.ruleId, { enabled: e.target.checked })} />
+                      </td>
+                    </tr>
+                  ))}
+                  {rules.length === 0 && <tr><td colSpan="4">No rules found</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        );
+
+        const moduleContent = {
+          dashboard: renderDashboard(),
+          workbench: renderWorkbench(),
+          validation: renderValidationCenter(),
+          corrections: renderCorrectionCenter(),
+          audit: renderAuditLogs(),
+          rules: renderRuleConfig()
+        };
+
+        return (
+          <div className="platform-shell">
+            <aside className="sidebar">
+              <div className="brand">Policy Integrity Platform</div>
+              <div className="tagline">Guidewire-style governed simulation</div>
+              <nav>
+                {modules.map((item) => (
+                  <button key={item.key} className={`nav-item ${activeModule === item.key ? "active" : ""}`} onClick={() => setActiveModule(item.key)}>
+                    {item.label}
+                  </button>
+                ))}
+              </nav>
+            </aside>
+
+            <main className="main-content">
+              <header className="hero">
+                <h1>Policy Integrity Management Platform</h1>
+                <p>Detect -&gt; Classify -&gt; Correct -&gt; Re-validate -&gt; Score -&gt; Audit</p>
+                <div className="small-note">Status: {statusText}</div>
+              </header>
+              {moduleContent[activeModule]}
+            </main>
           </div>
         );
       }

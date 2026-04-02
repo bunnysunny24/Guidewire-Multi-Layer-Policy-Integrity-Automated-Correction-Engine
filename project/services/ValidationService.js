@@ -1,12 +1,25 @@
 const PolicyIssue = require("../entity/PolicyIssue");
+const { createRuleConfigMap, rulesCatalog } = require("./ruleCatalog");
 
 class ValidationService {
-  static validate(policy, actor = "system") {
+  static validate(policy, actor = "system", options = {}) {
     const drafts = [];
+    const ruleConfigMap = options.ruleConfigMap || createRuleConfigMap(rulesCatalog);
+
+    const addDraft = (draft) => {
+      const config = ruleConfigMap[draft.ruleId];
+      if (config && config.enabled === false) {
+        return;
+      }
+      if (config && config.severity) {
+        draft.severity = config.severity;
+      }
+      drafts.push(draft);
+    };
 
     // Layer 1: Field validation.
     if (policy.premium == null || policy.premium < 0) {
-      drafts.push({
+      addDraft({
         issueType: "FieldValidation",
         description: "Premium is missing or negative",
         severity: "High",
@@ -19,7 +32,7 @@ class ValidationService {
     }
 
     if (!policy.address && policy.customer && policy.customer.address) {
-      drafts.push({
+      addDraft({
         issueType: "FieldValidation",
         description: "Policy address missing; can be copied from customer address",
         severity: "Low",
@@ -33,7 +46,7 @@ class ValidationService {
 
     // Layer 2: Business validation.
     if (policy.coverage > 100000 && policy.premium < 5000) {
-      drafts.push({
+      addDraft({
         issueType: "BusinessValidation",
         description: "Premium too low for high coverage",
         severity: "Medium",
@@ -46,7 +59,7 @@ class ValidationService {
     }
 
     if (!policy.configValid) {
-      drafts.push({
+      addDraft({
         issueType: "BusinessValidation",
         description: "Invalid policy configuration detected",
         severity: "Critical",
@@ -59,7 +72,7 @@ class ValidationService {
 
     // Layer 3: Cross-entity validation.
     if (!policy.customer) {
-      drafts.push({
+      addDraft({
         issueType: "CrossEntityValidation",
         description: "Missing customer on policy",
         severity: "Critical",
@@ -71,7 +84,7 @@ class ValidationService {
     }
 
     if (policy.duplicateCustomerCandidate) {
-      drafts.push({
+      addDraft({
         issueType: "CrossEntityValidation",
         description: "Possible duplicate customer; merge suggested",
         severity: "Low",
@@ -85,7 +98,7 @@ class ValidationService {
 
     // Layer 4: Cross-system validation (simulated).
     if (policy.status === "Cancelled" && policy.billingActive) {
-      drafts.push({
+      addDraft({
         issueType: "CrossSystemValidation",
         description: "Billing active for cancelled policy",
         severity: "High",
