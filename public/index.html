@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Policy Integrity Management Platform</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Merriweather:wght@700&family=Source+Sans+3:wght@400;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/styles.css" />
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -24,6 +27,17 @@
         { key: "audit", label: "Audit Logs" },
         { key: "rules", label: "Rule Configuration" }
       ];
+
+      const suiteMenus = ["Desktop", "Account", "Policy", "Contact", "Reinsurance", "Search", "Team"];
+
+      const moduleDescriptions = {
+        dashboard: "Monitor policy quality, correction outcomes, and enterprise risk posture.",
+        workbench: "Create and manage policy records before validation and governance execution.",
+        validation: "Review detected issues across all validation layers and policy records.",
+        corrections: "Track applied corrections and clear suggestion queues with controlled actions.",
+        audit: "Inspect the timeline of system decisions, rule triggers, and correction events.",
+        rules: "Configure validation rules, severity weightings, and execution governance settings."
+      };
 
       const defaultForm = {
         premium: -500,
@@ -54,21 +68,21 @@
       function moduleIcon(moduleName = "") {
         const module = moduleName.toLowerCase();
         if (module.includes("detect") || module.includes("validation")) {
-          return "🔍";
+          return "VAL";
         }
         if (module.includes("correct")) {
-          return "🛠️";
+          return "FIX";
         }
         if (module.includes("score")) {
-          return "📊";
+          return "SCR";
         }
         if (module.includes("audit")) {
-          return "🧾";
+          return "AUD";
         }
         if (module.includes("rules")) {
-          return "⚙️";
+          return "CFG";
         }
-        return "•";
+        return "SYS";
       }
 
       function formatRelativeTime(timestamp) {
@@ -153,8 +167,14 @@
         const [lastRunAt, setLastRunAt] = useState(null);
         const [demoModeRunning, setDemoModeRunning] = useState(false);
         const [ruleImpactMessage, setRuleImpactMessage] = useState("");
+        const [demoCases, setDemoCases] = useState([]);
+        const [selectedDemoCase, setSelectedDemoCase] = useState("");
+        const [batchRunSummary, setBatchRunSummary] = useState(null);
+        const [policySearch, setPolicySearch] = useState("");
+        const [policySort, setPolicySort] = useState("updated_desc");
         const [validationFilters, setValidationFilters] = useState({
           severity: "",
+          status: "",
           ruleId: "",
           policyId: "",
           search: ""
@@ -165,6 +185,7 @@
           fetchIssues();
           fetchCorrections();
           fetchAudits();
+          fetchDemoCases();
         }, []);
 
         async function bootstrap() {
@@ -204,6 +225,23 @@
           setAuditEvents(data.events || []);
         }
 
+        async function fetchDemoCases() {
+          try {
+            const res = await fetch("/api/demo-cases");
+            if (!res.ok) {
+              throw new Error("Failed to load demo cases");
+            }
+            const data = await res.json();
+            const cases = data.cases || [];
+            setDemoCases(cases);
+            if (!selectedDemoCase && cases.length > 0) {
+              setSelectedDemoCase(cases[0].name);
+            }
+          } catch (error) {
+            setStatusText("Unable to load demo cases");
+          }
+        }
+
         function setField(key, value) {
           setForm((prev) => ({ ...prev, [key]: value }));
         }
@@ -214,6 +252,11 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
           });
+
+          if (!response.ok) {
+            throw new Error("Create policy failed");
+          }
+
           const created = await response.json();
           return created;
         }
@@ -240,6 +283,205 @@
           });
           setStatusText(`Policy updated: ${selectedPolicyId}`);
           await bootstrap();
+        }
+
+        function loadDemoCase() {
+          const match = demoCases.find((item) => item.name === selectedDemoCase);
+          if (!match) {
+            setStatusText("Choose a demo case first");
+            return;
+          }
+
+          setForm({
+            ...defaultForm,
+            ...match.payload,
+            policyAddress: match.payload.policyAddress || "",
+            actor: "ui.user"
+          });
+          setStatusText(`Loaded: ${match.name}`);
+        }
+
+        async function seedDemoPack() {
+          if (demoCases.length === 0) {
+            setStatusText("No demo cases available to seed");
+            return;
+          }
+
+          if (running || demoModeRunning) {
+            return;
+          }
+
+          setRunning(true);
+          setStatusText("Creating demo policy pack...");
+
+          try {
+            for (const demoCase of demoCases) {
+              const payload = {
+                ...defaultForm,
+                ...demoCase.payload,
+                policyAddress: demoCase.payload.policyAddress || "",
+                actor: "demo.seed"
+              };
+              await createPolicyWithPayload(payload);
+            }
+
+            await bootstrap();
+            await fetchIssues();
+            await fetchCorrections();
+            await fetchAudits();
+            setStatusText(`Demo pack created: ${demoCases.length} policies`);
+          } catch (error) {
+            setStatusText("Demo pack creation failed");
+          } finally {
+            setRunning(false);
+          }
+        }
+
+        async function runAllPolicies() {
+          if (policies.length === 0) {
+            setStatusText("Create at least one policy before running all");
+            return;
+          }
+
+          setRunning(true);
+          setStatusText("Running all policies...");
+
+          try {
+            const response = await fetch("/api/platform/run-all", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ actor: form.actor || "ui.user" })
+            });
+
+            if (!response.ok) {
+              throw new Error("Batch run failed");
+            }
+
+            const data = await response.json();
+            setBatchRunSummary(data.summary || null);
+            setStatusText(`Batch run complete: ${data.count} policy(s)`);
+            await bootstrap();
+            await fetchIssues();
+            await fetchCorrections();
+            await fetchAudits();
+            setActiveModule("dashboard");
+          } catch (error) {
+            setStatusText("Batch run failed");
+          } finally {
+            setRunning(false);
+          }
+        }
+
+        async function deleteSelectedPolicy() {
+          if (!selectedPolicyId) {
+            setStatusText("Select a policy first");
+            return;
+          }
+
+          const confirmed = window.confirm(`Delete ${selectedPolicyId}? This cannot be undone.`);
+          if (!confirmed) {
+            return;
+          }
+
+          const response = await fetch(`/api/platform/policies/${selectedPolicyId}`, {
+            method: "DELETE"
+          });
+
+          if (!response.ok) {
+            setStatusText("Delete failed");
+            return;
+          }
+
+          setSelectedPolicyId("");
+          setRunResult(null);
+          setForm(defaultForm);
+          setStatusText("Policy deleted");
+          await bootstrap();
+          await fetchIssues();
+          await fetchCorrections();
+          await fetchAudits();
+        }
+
+        async function resetPlatform() {
+          const confirmed = window.confirm("Reset all policies, audits, and rule overrides?");
+          if (!confirmed) {
+            return;
+          }
+
+          const response = await fetch("/api/platform/reset", {
+            method: "POST"
+          });
+
+          if (!response.ok) {
+            setStatusText("Reset failed");
+            return;
+          }
+
+          setSelectedPolicyId("");
+          setRunResult(null);
+          setBatchRunSummary(null);
+          setForm(defaultForm);
+          setValidationFilters({
+            severity: "",
+            status: "",
+            ruleId: "",
+            policyId: "",
+            search: ""
+          });
+
+          await bootstrap();
+          await fetchIssues({ severity: "", status: "", ruleId: "", policyId: "", search: "" });
+          await fetchCorrections();
+          await fetchAudits();
+          setStatusText("Platform reset complete");
+        }
+
+        function exportSelectedSnapshot() {
+          if (!selectedPolicyId) {
+            setStatusText("Select a policy first");
+            return;
+          }
+
+          const selectedPolicy = policies.find((p) => p.policyId === selectedPolicyId);
+          const payload = {
+            exportedAt: new Date().toISOString(),
+            selectedPolicy,
+            runResult,
+            issues: issues.filter((item) => item.policyId === selectedPolicyId),
+            corrections: corrections.filter((item) => item.policyId === selectedPolicyId),
+            audits: auditEvents.filter((item) => item.policyId === selectedPolicyId)
+          };
+
+          const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = `${selectedPolicyId}-snapshot.json`;
+          anchor.click();
+          URL.revokeObjectURL(url);
+          setStatusText(`Snapshot exported: ${selectedPolicyId}`);
+        }
+
+        function exportAuditLog() {
+          const exportEvents = selectedPolicyId
+            ? auditEvents.filter((event) => event.policyId === selectedPolicyId)
+            : auditEvents;
+
+          const payload = {
+            exportedAt: new Date().toISOString(),
+            selectedPolicyId,
+            count: exportEvents.length,
+            events: exportEvents
+          };
+
+          const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = selectedPolicyId ? `${selectedPolicyId}-audit.json` : "platform-audit.json";
+          anchor.click();
+          URL.revokeObjectURL(url);
+          setStatusText("Audit timeline exported");
         }
 
         async function runPolicy(policyId = selectedPolicyId) {
@@ -305,17 +547,13 @@
           setRuleImpactMessage("");
 
           try {
+            const selected = demoCases.find((item) => item.name === selectedDemoCase);
+            const fallback = demoCases[0];
+            const chosenCase = selected || fallback;
             const demoPayload = {
-              premium: -500,
-              coverage: 200000,
-              status: "Active",
-              hasCustomer: true,
-              customerName: "Aarav Sharma",
-              customerAddress: "12 Green Street",
-              policyAddress: "",
-              duplicateCustomerCandidate: true,
-              billingActive: false,
-              configValid: true,
+              ...defaultForm,
+              ...(chosenCase ? chosenCase.payload : {}),
+              policyAddress: chosenCase?.payload?.policyAddress || "",
               actor: "demo.mode"
             };
 
@@ -366,6 +604,30 @@
           }
         }
 
+        async function resetRulesToDefault() {
+          const confirmed = window.confirm("Reset all rule settings to catalog defaults?");
+          if (!confirmed) {
+            return;
+          }
+
+          const response = await fetch("/api/platform/rules/reset", {
+            method: "POST"
+          });
+
+          if (!response.ok) {
+            setStatusText("Failed to reset rules");
+            return;
+          }
+
+          await bootstrap();
+          await fetchAudits();
+          setStatusText("Rule settings restored to default values");
+
+          if (autoRerunRules && selectedPolicyId) {
+            await runPolicy(selectedPolicyId);
+          }
+        }
+
         async function actOnSuggestion(policyId, issueKey, action) {
           await fetch(`/api/platform/policies/${policyId}/issues/${issueKey}/action`, {
             method: "POST",
@@ -382,6 +644,19 @@
           setSelectedPolicyId(policy.policyId);
           setForm(policy.input);
           setStatusText(`Selected ${policy.policyId}`);
+        }
+
+        function clearValidationFilters() {
+          const cleared = {
+            severity: "",
+            status: "",
+            ruleId: "",
+            policyId: "",
+            search: ""
+          };
+
+          setValidationFilters(cleared);
+          fetchIssues(cleared);
         }
 
         const dashboard = useMemo(() => {
@@ -426,6 +701,69 @@
           };
         }, [policies, issues]);
 
+        const activeModuleDef = useMemo(
+          () => modules.find((item) => item.key === activeModule) || modules[0],
+          [activeModule]
+        );
+
+        const selectedPolicy = useMemo(
+          () => policies.find((policy) => policy.policyId === selectedPolicyId) || null,
+          [policies, selectedPolicyId]
+        );
+
+        const selectedPolicyIssueCount = useMemo(
+          () => issues.filter((issue) => issue.policyId === selectedPolicyId).length,
+          [issues, selectedPolicyId]
+        );
+
+        const selectedPolicySuggestionCount = useMemo(
+          () => issues.filter((issue) => issue.policyId === selectedPolicyId && issue.status === "Suggested").length,
+          [issues, selectedPolicyId]
+        );
+
+        const visiblePolicies = useMemo(() => {
+          const query = policySearch.trim().toLowerCase();
+          let items = [...policies];
+
+          if (query) {
+            items = items.filter((policy) => {
+              const customerName = String(policy.input?.customerName || "").toLowerCase();
+              return (
+                String(policy.policyId || "").toLowerCase().includes(query) ||
+                String(policy.status || "").toLowerCase().includes(query) ||
+                customerName.includes(query)
+              );
+            });
+          }
+
+          const byDate = (left, right, field) => {
+            const leftValue = left[field] ? new Date(left[field]).getTime() : 0;
+            const rightValue = right[field] ? new Date(right[field]).getTime() : 0;
+            return rightValue - leftValue;
+          };
+
+          switch (policySort) {
+            case "score_desc":
+              items.sort((a, b) => (b.scoreAfter || 0) - (a.scoreAfter || 0));
+              break;
+            case "score_asc":
+              items.sort((a, b) => (a.scoreAfter || 0) - (b.scoreAfter || 0));
+              break;
+            case "status":
+              items.sort((a, b) => String(a.status || "").localeCompare(String(b.status || "")));
+              break;
+            case "created_desc":
+              items.sort((a, b) => byDate(a, b, "createdAt"));
+              break;
+            case "updated_desc":
+            default:
+              items.sort((a, b) => byDate(a, b, "updatedAt"));
+              break;
+          }
+
+          return items;
+        }, [policies, policySearch, policySort]);
+
         const workflowNames = ["Detect", "Classify", "Correct", "Re-validate", "Score", "Audit"];
 
         const renderDashboard = () => (
@@ -444,6 +782,16 @@
                 <li>Critical issues reduced by: {dashboard.criticalReduction}%</li>
               </ul>
             </section>
+            {batchRunSummary && (
+              <section className="panel batch-summary">
+                <h3>Latest Batch Run</h3>
+                <div className="kpi-row compact">
+                  <div className="kpi"><span>Validated</span><strong>{batchRunSummary.validated}</strong></div>
+                  <div className="kpi"><span>Corrected</span><strong>{batchRunSummary.corrected}</strong></div>
+                  <div className="kpi"><span>Blocked</span><strong>{batchRunSummary.blocked}</strong></div>
+                </div>
+              </section>
+            )}
             <div className="before-after-panel">
               <div className="panel stat-panel">
                 <h3>Before vs After (Latest Run)</h3>
@@ -493,6 +841,19 @@
           <div className="module-grid two-col">
             <section className="panel">
               <h2>Policy Form</h2>
+              <div className="scenario-strip">
+                <select value={selectedDemoCase} onChange={(e) => setSelectedDemoCase(e.target.value)}>
+                  {demoCases.length === 0 && <option value="">No demo cases loaded</option>}
+                  {demoCases.map((demoCase) => (
+                    <option key={demoCase.name} value={demoCase.name}>{demoCase.name}</option>
+                  ))}
+                </select>
+                <button className="btn-secondary" onClick={loadDemoCase}>Load Demo Case</button>
+                <button className="btn-secondary" onClick={seedDemoPack} disabled={running || demoModeRunning || demoCases.length === 0}>Seed Demo Pack</button>
+                <button className="btn-ghost" onClick={runDemoMode} disabled={demoModeRunning || running}>
+                  {demoModeRunning ? "Demo Running..." : "Guided Demo"}
+                </button>
+              </div>
               <div className="form-grid">
                 <div className="field"><label>Premium</label><input type="number" value={form.premium} onChange={(e) => setField("premium", Number(e.target.value))} /></div>
                 <div className="field"><label>Coverage</label><input type="number" value={form.coverage} onChange={(e) => setField("coverage", Number(e.target.value))} /></div>
@@ -510,6 +871,10 @@
                 <button className="btn-primary" onClick={createPolicy}>Create Policy</button>
                 <button className="btn-secondary" onClick={updatePolicy}>Update Selected</button>
                 <button className="btn-ghost" onClick={() => runPolicy() } disabled={running}>{running ? "Running..." : "Validate Policy"}</button>
+                <button className="btn-ghost" onClick={runAllPolicies} disabled={running || policies.length === 0}>Run All Policies</button>
+                <button className="btn-secondary" onClick={exportSelectedSnapshot} disabled={!selectedPolicyId}>Export Snapshot</button>
+                <button className="mini danger" onClick={deleteSelectedPolicy} disabled={!selectedPolicyId}>Delete Selected</button>
+                <button className="mini danger" onClick={resetPlatform}>Reset Platform</button>
               </div>
 
               <div className="workflow-strip">
@@ -525,24 +890,60 @@
 
             <section className="panel">
               <h2>Policies</h2>
+              <div className="toolbar-row">
+                <input
+                  placeholder="Search policy id, status, customer"
+                  value={policySearch}
+                  onChange={(e) => setPolicySearch(e.target.value)}
+                />
+                <select value={policySort} onChange={(e) => setPolicySort(e.target.value)}>
+                  <option value="updated_desc">Sort: Recently Updated</option>
+                  <option value="created_desc">Sort: Recently Created</option>
+                  <option value="score_desc">Sort: Score High to Low</option>
+                  <option value="score_asc">Sort: Score Low to High</option>
+                  <option value="status">Sort: Status</option>
+                </select>
+                <div className="small-note">Showing {visiblePolicies.length} of {policies.length}</div>
+              </div>
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>ID</th><th>Status</th><th>Score</th><th>Run</th><th>Status Flow</th><th>Action</th></tr></thead>
+                  <thead><tr><th>ID</th><th>Status</th><th>Score</th><th>Updated</th><th>Run</th><th>Status Flow</th><th>Action</th></tr></thead>
                   <tbody>
-                    {policies.map((p) => (
+                    {visiblePolicies.map((p) => (
                       <tr key={p.policyId}>
                         <td>{p.policyId}</td>
                         <td><StatusBadge value={p.status} /></td>
                         <td>{p.scoreAfter}</td>
+                        <td>{p.updatedAt ? formatRelativeTime(p.updatedAt) : "-"}</td>
                         <td>{p.lastRunAt ? new Date(p.lastRunAt).toLocaleTimeString() : "-"}</td>
                         <td className="flow-mini">{(p.statusHistory || []).map((s) => s.status).join(" → ") || "NEW"}</td>
                         <td>
                           <button className="mini" onClick={() => selectPolicy(p)}>Select</button>
                           <button className="mini" onClick={() => runPolicy(p.policyId)}>Run</button>
+                          <button className="mini danger" onClick={async () => {
+                            const confirmed = window.confirm(`Delete ${p.policyId}?`);
+                            if (!confirmed) {
+                              return;
+                            }
+                            const response = await fetch(`/api/platform/policies/${p.policyId}`, { method: "DELETE" });
+                            if (!response.ok) {
+                              setStatusText(`Delete failed: ${p.policyId}`);
+                              return;
+                            }
+                            if (selectedPolicyId === p.policyId) {
+                              setSelectedPolicyId("");
+                              setForm(defaultForm);
+                            }
+                            setStatusText(`Deleted: ${p.policyId}`);
+                            await bootstrap();
+                            await fetchIssues();
+                            await fetchCorrections();
+                            await fetchAudits();
+                          }}>Delete</button>
                         </td>
                       </tr>
                     ))}
-                    {policies.length === 0 && <tr><td colSpan="6">No policies yet</td></tr>}
+                    {visiblePolicies.length === 0 && <tr><td colSpan="7">No policies match the current search</td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -558,11 +959,15 @@
               <select value={validationFilters.severity} onChange={(e) => setValidationFilters((p) => ({ ...p, severity: e.target.value }))}>
                 <option value="">All Severity</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option>
               </select>
+              <select value={validationFilters.status} onChange={(e) => setValidationFilters((p) => ({ ...p, status: e.target.value }))}>
+                <option value="">All Status</option><option>Open</option><option>Resolved</option><option>Suggested</option><option>Blocked</option><option>Approved</option><option>Rejected</option>
+              </select>
               <select value={validationFilters.policyId} onChange={(e) => setValidationFilters((p) => ({ ...p, policyId: e.target.value }))}>
                 <option value="">All Policies</option>
                 {policies.map((p) => <option key={p.policyId} value={p.policyId}>{p.policyId}</option>)}
               </select>
               <button className="btn-ghost" onClick={() => fetchIssues(validationFilters)}>Apply Filters</button>
+              <button className="btn-secondary" onClick={clearValidationFilters}>Clear</button>
             </div>
             <div className="table-wrap">
               <table>
@@ -609,7 +1014,7 @@
               </section>
 
               <section className="panel">
-                <h2>Suggestion Queue</h2>
+                <h2>Suggestion Queue ({suggestions.length})</h2>
                 <div className="table-wrap">
                   <table>
                     <thead><tr><th>Policy</th><th>Rule</th><th>Status</th><th>Decision</th></tr></thead>
@@ -637,7 +1042,7 @@
         const renderAuditLogs = () => (
           <section className="panel">
             <h2>Audit Timeline</h2>
-            <div className="actions"><button className="btn-ghost" onClick={() => fetchAudits(selectedPolicyId)}>Filter Selected Policy</button><button className="btn-secondary" onClick={() => fetchAudits()}>Show All</button></div>
+            <div className="actions"><button className="btn-ghost" onClick={() => fetchAudits(selectedPolicyId)}>Filter Selected Policy</button><button className="btn-secondary" onClick={() => fetchAudits()}>Show All</button><button className="btn-secondary" onClick={exportAuditLog}>Export Audit JSON</button></div>
             <div className="timeline">
               {auditEvents.map((event) => (
                 <div className={`timeline-item mod-${String(event.module || "").toLowerCase().replace(/[^a-z]/g, "")}`} key={event.eventId}>
@@ -659,6 +1064,7 @@
             <div className="actions">
               <label className="inline-check"><input type="checkbox" checked={autoRerunRules} onChange={(e) => setAutoRerunRules(e.target.checked)} /> Auto re-run selected policy after rule change</label>
               <button className="btn-ghost" onClick={() => runPolicy(selectedPolicyId)} disabled={!selectedPolicyId || running}>Re-run Selected Policy</button>
+              <button className="btn-secondary" onClick={resetRulesToDefault}>Restore Rule Defaults</button>
             </div>
             <div className="table-wrap">
               <table>
@@ -696,10 +1102,28 @@
 
         return (
           <div className="platform-shell">
+            <header className="global-header">
+              <div className="global-left">
+                <div className="global-brand">
+                  <div className="suite-title">PolicyCenter</div>
+                </div>
+                <nav className="suite-menu">
+                  {suiteMenus.map((menu) => (
+                    <button key={menu} className="suite-menu-item" type="button">{menu}</button>
+                  ))}
+                </nav>
+              </div>
+              <div className="global-right">
+                <span className="meta-pill">{running || demoModeRunning ? "Running" : "Ready"}</span>
+                <input className="header-search" placeholder="Go to (Alt+/)" />
+              </div>
+            </header>
+
             <aside className="sidebar">
-              <div className="brand">Policy Integrity Platform</div>
-              <div className="tagline">Guidewire-style governed simulation</div>
-              <nav>
+              <button className="actions-launcher" type="button">Actions</button>
+              <div className="tenant-card">Enigma Fire & Casualty</div>
+              <div className="side-group-title">Policy Integrity</div>
+              <nav className="module-nav">
                 {modules.map((item) => (
                   <button key={item.key} className={`nav-item ${activeModule === item.key ? "active" : ""}`} onClick={() => setActiveModule(item.key)}>
                     {item.label}
@@ -709,19 +1133,59 @@
             </aside>
 
             <main className="main-content">
-              <header className="hero">
-                <h1>Policy Integrity Management Platform</h1>
-                <p>Detect -&gt; Classify -&gt; Correct -&gt; Re-validate -&gt; Score -&gt; Audit</p>
-                <div className="system-banner">
-                  <div>System Status: <strong>Integrity Engine Active</strong></div>
-                  <div>Last Run: <strong>{formatRelativeTime(lastRunAt)}</strong></div>
-                  <button className="btn-primary" onClick={runDemoMode} disabled={demoModeRunning || running}>
-                    {demoModeRunning ? "Demo Running..." : "▶ Run Demo Scenario"}
-                  </button>
+              <header className="workspace-header">
+                <div className="workspace-title-group">
+                  <div className="workspace-path">Home / PolicyCenter / Integrity</div>
+                  <h1>{activeModuleDef.label}</h1>
+                  <p>{moduleDescriptions[activeModuleDef.key]}</p>
                 </div>
-                <div className="small-note">Status: {statusText}</div>
-                {ruleImpactMessage && <div className="rule-impact-msg">{ruleImpactMessage}</div>}
+                <div className="workspace-actions">
+                  <button className="btn-primary" onClick={runDemoMode} disabled={demoModeRunning || running}>
+                    {demoModeRunning ? "Demo Running..." : "Run Demo"}
+                  </button>
+                  <button className="btn-ghost" onClick={runAllPolicies} disabled={running || policies.length === 0}>Run All</button>
+                  <button className="btn-secondary" onClick={exportSelectedSnapshot} disabled={!selectedPolicyId}>Export Snapshot</button>
+                </div>
               </header>
+
+              <div className="workspace-tabs">
+                {modules.map((item) => (
+                  <button
+                    key={item.key}
+                    className={`workspace-tab ${activeModule === item.key ? "active" : ""}`}
+                    type="button"
+                    onClick={() => setActiveModule(item.key)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+
+              <section className="context-strip">
+                <div className="context-card">
+                  <span>Selected Policy</span>
+                  <strong>{selectedPolicyId || "None"}</strong>
+                </div>
+                <div className="context-card">
+                  <span>Status</span>
+                  <strong>{selectedPolicy?.status || "Not Selected"}</strong>
+                </div>
+                <div className="context-card">
+                  <span>Current Score</span>
+                  <strong>{selectedPolicy ? selectedPolicy.scoreAfter : "-"}</strong>
+                </div>
+                <div className="context-card">
+                  <span>Open Issues</span>
+                  <strong>{selectedPolicy ? selectedPolicyIssueCount : 0}</strong>
+                </div>
+                <div className="context-card">
+                  <span>Suggestions</span>
+                  <strong>{selectedPolicy ? selectedPolicySuggestionCount : 0}</strong>
+                </div>
+              </section>
+
+              <div className="small-note">Status: {statusText} | Scenario: {selectedDemoCase || "manual"}</div>
+              {ruleImpactMessage && <div className="rule-impact-msg">{ruleImpactMessage}</div>}
               {moduleContent[activeModule]}
             </main>
           </div>
