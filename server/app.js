@@ -78,6 +78,7 @@ function platformPolicySummary(policy) {
   return {
     policyId: policy.policyId,
     status: policy.status,
+    statusHistory: policy.statusHistory || [],
     scoreBefore: policy.scoreBefore,
     scoreAfter: policy.scoreAfter,
     canProceed: policy.canProceed,
@@ -94,12 +95,12 @@ function getPlatformRuleMap() {
 
 function computePolicyStatus(runResult) {
   if (!runResult.canProceed) {
-    return "INVALID";
+    return "BLOCKED";
   }
   if (runResult.corrections.length > 0) {
     return "CORRECTED";
   }
-  return "VALID";
+  return "VALIDATED";
 }
 
 app.post("/api/validate-policy", (req, res) => {
@@ -177,6 +178,13 @@ app.post("/api/platform/policies/:policyId/run", (req, res) => {
   record.scoreAfter = runResult.scoreAfter;
   record.canProceed = runResult.canProceed;
   record.status = computePolicyStatus(runResult);
+  record.statusHistory = record.statusHistory || [];
+  if (record.statusHistory.length === 0 || record.statusHistory[record.statusHistory.length - 1].status !== record.status) {
+    record.statusHistory.push({
+      status: record.status,
+      at: new Date().toISOString()
+    });
+  }
   record.lastRunAt = new Date().toISOString();
 
   runResult.logs.forEach((log) => {

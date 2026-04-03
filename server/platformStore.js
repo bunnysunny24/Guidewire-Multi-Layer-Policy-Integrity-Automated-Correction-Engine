@@ -44,6 +44,12 @@ function createPolicy(input) {
     policyId: nextPolicyId(),
     input,
     status: "NEW",
+    statusHistory: [
+      {
+        status: "NEW",
+        at: new Date().toISOString()
+      }
+    ],
     scoreBefore: 100,
     scoreAfter: 100,
     issues: [],
@@ -64,6 +70,13 @@ function updatePolicy(policyId, input) {
     return null;
   }
   policy.input = input;
+  if (policy.status !== "NEW") {
+    policy.status = "NEW";
+    policy.statusHistory.push({
+      status: "NEW",
+      at: new Date().toISOString()
+    });
+  }
   pushAudit(policyId, "Workbench", "Policy updated", { policyId });
   return policy;
 }

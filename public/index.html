@@ -71,6 +71,22 @@
         return "•";
       }
 
+      function formatRelativeTime(timestamp) {
+        if (!timestamp) {
+          return "never";
+        }
+        const diffSec = Math.max(0, Math.floor((Date.now() - new Date(timestamp).getTime()) / 1000));
+        if (diffSec < 60) {
+          return `${diffSec}s ago`;
+        }
+        const diffMin = Math.floor(diffSec / 60);
+        if (diffMin < 60) {
+          return `${diffMin}m ago`;
+        }
+        const diffHr = Math.floor(diffMin / 60);
+        return `${diffHr}h ago`;
+      }
+
       function ChartPanel({ chartId, type, labels, values, title }) {
         const canvasRef = useRef(null);
 
@@ -134,6 +150,9 @@
         const [workflowStep, setWorkflowStep] = useState(-1);
         const [workflowLogs, setWorkflowLogs] = useState([]);
         const [autoRerunRules, setAutoRerunRules] = useState(true);
+        const [lastRunAt, setLastRunAt] = useState(null);
+        const [demoModeRunning, setDemoModeRunning] = useState(false);
+        const [ruleImpactMessage, setRuleImpactMessage] = useState("");
         const [validationFilters, setValidationFilters] = useState({
           severity: "",
           ruleId: "",
@@ -189,13 +208,18 @@
           setForm((prev) => ({ ...prev, [key]: value }));
         }
 
-        async function createPolicy() {
+        async function createPolicyWithPayload(payload) {
           const response = await fetch("/api/platform/policies", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(form)
+            body: JSON.stringify(payload)
           });
           const created = await response.json();
+          return created;
+        }
+
+        async function createPolicy() {
+          const created = await createPolicyWithPayload(form);
           setSelectedPolicyId(created.policyId);
           setStatusText(`Policy created: ${created.policyId}`);
           await bootstrap();
@@ -254,21 +278,76 @@
 
             const data = await response.json();
             setRunResult(data);
+            setLastRunAt(new Date().toISOString());
             setStatusText(`Run complete for ${policyId}`);
             setWorkflowLogs((prev) => [...prev, ...data.logs.map((l) => `${l.step}: ${l.message}`)]);
             await bootstrap();
             await fetchIssues();
             await fetchCorrections();
             await fetchAudits(policyId);
+            return data;
           } catch (error) {
             setStatusText("Simulation failed");
+            return null;
           } finally {
             setRunning(false);
             setWorkflowStep(-1);
           }
         }
 
+        async function runDemoMode() {
+          if (demoModeRunning || running) {
+            return;
+          }
+
+          setDemoModeRunning(true);
+          setStatusText("Demo mode running...");
+          setRuleImpactMessage("");
+
+          try {
+            const demoPayload = {
+              premium: -500,
+              coverage: 200000,
+              status: "Active",
+              hasCustomer: true,
+              customerName: "Aarav Sharma",
+              customerAddress: "12 Green Street",
+              policyAddress: "",
+              duplicateCustomerCandidate: true,
+              billingActive: false,
+              configValid: true,
+              actor: "demo.mode"
+            };
+
+            setActiveModule("workbench");
+            setForm(demoPayload);
+            await wait(350);
+
+            const created = await createPolicyWithPayload(demoPayload);
+            setSelectedPolicyId(created.policyId);
+            await bootstrap();
+            await wait(350);
+
+            await runPolicy(created.policyId);
+
+            const tour = ["dashboard", "validation", "corrections", "audit", "rules"];
+            for (const page of tour) {
+              setActiveModule(page);
+              await wait(850);
+            }
+
+            setStatusText("Demo mode complete");
+          } catch (e) {
+            setStatusText("Demo mode failed");
+          } finally {
+            setDemoModeRunning(false);
+          }
+        }
+
         async function updateRule(ruleId, patch) {
+          const selectedPolicy = policies.find((p) => p.policyId === selectedPolicyId);
+          const previousScore = selectedPolicy ? selectedPolicy.scoreAfter : null;
+
           await fetch(`/api/platform/rules/${ruleId}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -278,7 +357,12 @@
           await fetchAudits();
           setStatusText(`Rule updated: ${ruleId}`);
           if (autoRerunRules && selectedPolicyId) {
-            await runPolicy(selectedPolicyId);
+            const rerun = await runPolicy(selectedPolicyId);
+            if (rerun && previousScore != null) {
+              const delta = rerun.scoreAfter - previousScore;
+              const sign = delta >= 0 ? "+" : "";
+              setRuleImpactMessage(`Rule updated: score changed by ${sign}${delta}`);
+            }
           }
         }
 
@@ -303,28 +387,42 @@
         const dashboard = useMemo(() => {
           const total = policies.length;
           const avgScore = total ? Math.round(policies.reduce((sum, p) => sum + (p.scoreAfter || 0), 0) / total) : 0;
-          const valid = policies.filter((p) => p.status === "VALID").length;
+          const validated = policies.filter((p) => p.status === "VALIDATED").length;
           const corrected = policies.filter((p) => p.status === "CORRECTED").length;
-          const invalid = policies.filter((p) => p.status === "INVALID").length;
+          const blocked = policies.filter((p) => p.status === "BLOCKED").length;
           const criticalIssues = issues.filter((i) => i.severity === "Critical").length;
           const autoFixableCount = issues.filter((i) => i.autoFixable).length;
           const autoFixedCount = issues.filter((i) => i.autoFixable && i.status === "Resolved").length;
           const autoFixRate = autoFixableCount > 0 ? Math.round((autoFixedCount / autoFixableCount) * 100) : 0;
+          const issueFreq = {};
           const severityBuckets = { Critical: 0, High: 0, Medium: 0, Low: 0 };
           issues.forEach((i) => {
             if (severityBuckets[i.severity] != null) {
               severityBuckets[i.severity] += 1;
             }
+            issueFreq[i.ruleId] = (issueFreq[i.ruleId] || 0) + 1;
           });
+
+          const topIssue = Object.keys(issueFreq).length
+            ? Object.entries(issueFreq).sort((a, b) => b[1] - a[1])[0][0]
+            : "No issues yet";
+
+          const currentCritical = issues.filter((i) => i.severity === "Critical" && i.status !== "Resolved").length;
+          const criticalReduction = criticalIssues > 0
+            ? Math.max(0, Math.round(((criticalIssues - currentCritical) / criticalIssues) * 100))
+            : 0;
+
           return {
             total,
             avgScore,
             criticalIssues,
             autoFixRate,
-            valid,
+            validated,
             corrected,
-            invalid,
-            severityBuckets
+            blocked,
+            severityBuckets,
+            topIssue,
+            criticalReduction
           };
         }, [policies, issues]);
 
@@ -338,6 +436,14 @@
               <div className="kpi"><span>Critical Issues</span><strong>{dashboard.criticalIssues}</strong></div>
               <div className="kpi"><span>Auto Fix Rate</span><strong>{dashboard.autoFixRate}%</strong></div>
             </div>
+            <section className="panel insights-panel">
+              <h3>Insights</h3>
+              <ul>
+                <li>Most frequent issue: {dashboard.topIssue}</li>
+                <li>Auto-fix success rate: {dashboard.autoFixRate}%</li>
+                <li>Critical issues reduced by: {dashboard.criticalReduction}%</li>
+              </ul>
+            </section>
             <div className="before-after-panel">
               <div className="panel stat-panel">
                 <h3>Before vs After (Latest Run)</h3>
@@ -372,10 +478,10 @@
                 dashboard.severityBuckets.Medium,
                 dashboard.severityBuckets.Low
               ]} />
-              <ChartPanel chartId="statusBars" type="bar" title="Policy Status" labels={["VALID", "CORRECTED", "INVALID"]} values={[
-                dashboard.valid,
+              <ChartPanel chartId="statusBars" type="bar" title="Policy Status" labels={["VALIDATED", "CORRECTED", "BLOCKED"]} values={[
+                dashboard.validated,
                 dashboard.corrected,
-                dashboard.invalid
+                dashboard.blocked
               ]} />
               <ChartPanel chartId="scoreTrend" type="line" title="Score Trend" labels={policies.slice(0, 8).map((p) => p.policyId)} values={policies.slice(0, 8).map((p) => p.scoreAfter || 0)} />
               <ChartPanel chartId="issuesTrend" type="line" title="Issues Trend" labels={policies.slice(0, 8).map((p) => p.policyId)} values={policies.slice(0, 8).map((p) => p.issueCount || 0)} />
@@ -421,7 +527,7 @@
               <h2>Policies</h2>
               <div className="table-wrap">
                 <table>
-                  <thead><tr><th>ID</th><th>Status</th><th>Score</th><th>Run</th><th>Action</th></tr></thead>
+                  <thead><tr><th>ID</th><th>Status</th><th>Score</th><th>Run</th><th>Status Flow</th><th>Action</th></tr></thead>
                   <tbody>
                     {policies.map((p) => (
                       <tr key={p.policyId}>
@@ -429,13 +535,14 @@
                         <td><StatusBadge value={p.status} /></td>
                         <td>{p.scoreAfter}</td>
                         <td>{p.lastRunAt ? new Date(p.lastRunAt).toLocaleTimeString() : "-"}</td>
+                        <td className="flow-mini">{(p.statusHistory || []).map((s) => s.status).join(" → ") || "NEW"}</td>
                         <td>
                           <button className="mini" onClick={() => selectPolicy(p)}>Select</button>
                           <button className="mini" onClick={() => runPolicy(p.policyId)}>Run</button>
                         </td>
                       </tr>
                     ))}
-                    {policies.length === 0 && <tr><td colSpan="5">No policies yet</td></tr>}
+                    {policies.length === 0 && <tr><td colSpan="6">No policies yet</td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -605,7 +712,15 @@
               <header className="hero">
                 <h1>Policy Integrity Management Platform</h1>
                 <p>Detect -&gt; Classify -&gt; Correct -&gt; Re-validate -&gt; Score -&gt; Audit</p>
+                <div className="system-banner">
+                  <div>System Status: <strong>Integrity Engine Active</strong></div>
+                  <div>Last Run: <strong>{formatRelativeTime(lastRunAt)}</strong></div>
+                  <button className="btn-primary" onClick={runDemoMode} disabled={demoModeRunning || running}>
+                    {demoModeRunning ? "Demo Running..." : "▶ Run Demo Scenario"}
+                  </button>
+                </div>
                 <div className="small-note">Status: {statusText}</div>
+                {ruleImpactMessage && <div className="rule-impact-msg">{ruleImpactMessage}</div>}
               </header>
               {moduleContent[activeModule]}
             </main>
