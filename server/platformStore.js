@@ -440,6 +440,15 @@ async function updatePolicy(policyId, input) {
     });
   }
 
+  // Editing policy input invalidates prior run artifacts.
+  policy.scoreBefore = 100;
+  policy.scoreAfter = 100;
+  policy.issues = [];
+  policy.corrections = [];
+  policy.logs = [];
+  policy.lastRunAt = null;
+  policy.canProceed = true;
+
   await upsertPolicy(policy);
   await pushAudit(policyId, "Workbench", "Policy updated", { policyId });
   return policy;
