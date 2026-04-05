@@ -53,6 +53,19 @@ class ValidationService {
       ))
     }
 
+    if (not hasText(policy.PolicyAddressText) and hasText(policy.CustomerAddressText)) {
+      drafts.add(IssueDraft.of(
+        "FieldValidation",
+        "Policy address missing; can be copied from customer address",
+        "Low",
+        PolicyIntegrityConstants.RULE_POLICY_ADDRESS_MISSING,
+        true,
+        "Auto",
+        0.95,
+        "address.missing"
+      ))
+    }
+
     // Layer 2: Business validation.
     if (policy.CoverageAmount != null and policy.Premium != null and policy.CoverageAmount > 100000 and policy.Premium < 5000) {
       drafts.add(IssueDraft.of(
@@ -132,18 +145,22 @@ class ValidationService {
   }
 
   private function hasActiveBilling(policy: Policy): boolean {
-    // Simulated external check. Replace with billing integration call.
-    return false
+    // Simulation driver backed by extension column; replace with BillingCenter integration call.
+    return policy.BillingActive == true
   }
 
   private function possibleDuplicateCustomer(policy: Policy): boolean {
-    // Simulated fuzzy match check.
-    return false
+    // Simulation driver backed by extension column; replace with fuzzy matching service.
+    return policy.DuplicateCustomerCandidate == true
   }
 
   private function invalidPolicyConfiguration(policy: Policy): boolean {
-    // Simulated critical configuration check.
-    return false
+    // Simulation driver backed by extension column; replace with product model validation.
+    return policy.ConfigValid == false
+  }
+
+  private function hasText(value: String): boolean {
+    return value != null and value.trim().length() > 0
   }
 }
 

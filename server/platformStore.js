@@ -7,11 +7,29 @@ const MYSQL_USER = process.env.MYSQL_USER || "root";
 const MYSQL_PASSWORD = process.env.MYSQL_PASSWORD || "Bunny";
 const MYSQL_DATABASE = process.env.MYSQL_DATABASE || "guidewire_policy_integrity";
 const AUDIT_MEMORY_CACHE_SIZE = Number(process.env.AUDIT_MEMORY_CACHE_SIZE || 2000);
+const INTEGRATION_MEMORY_CACHE_SIZE = Number(process.env.INTEGRATION_MEMORY_CACHE_SIZE || 2000);
+
+const DEFAULT_GOVERNANCE_CONFIG = {
+  mode: "full-automation",
+  enableValidation: true,
+  enableCorrection: true,
+  enableRevalidation: true,
+  autoApplyCorrections: true,
+  autoApplyMinConfidence: 0.9,
+  emitIntegrationEvents: true
+};
+
+const DEFAULT_ROI_ASSUMPTIONS = {
+  minutesPerAutoCorrection: 12,
+  reviewMinutesPerSuggestedIssue: 6,
+  blockedCaseCostAvoided: 220
+};
 
 let pool = null;
 let initialized = false;
 let policyCounter = 1000;
 let eventCounter = 1;
+let integrationEventCounter = 1;
 
 function createRulesState() {
   return rulesCatalog.map((rule) => ({
@@ -26,7 +44,10 @@ function createRulesState() {
 const state = {
   policies: [],
   rules: createRulesState(),
-  auditEvents: []
+  auditEvents: [],
+  governance: { ...DEFAULT_GOVERNANCE_CONFIG },
+  roiAssumptions: { ...DEFAULT_ROI_ASSUMPTIONS },
+  integrationEvents: []
 };
 
 function ensureInitialized() {
@@ -139,6 +160,41 @@ async function ensureSchema() {
       INDEX idx_policy_timestamp (policy_id, timestamp)
     ) ENGINE=InnoDB;
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS platform_settings (
+      setting_key VARCHAR(80) PRIMARY KEY,
+      setting_json LONGTEXT NOT NULL,
+      updated_at DATETIME NOT NULL
+    ) ENGINE=InnoDB;
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS platform_integration_events (
+      integration_event_id VARCHAR(64) PRIMARY KEY,
+      policy_id VARCHAR(64) NOT NULL,
+      target_system VARCHAR(60) NOT NULL,
+      event_type VARCHAR(120) NOT NULL,
+      status VARCHAR(32) NOT NULL,
+      payload_json LONGTEXT NOT NULL,
+      created_at DATETIME NOT NULL,
+      INDEX idx_integration_created (created_at),
+      INDEX idx_integration_policy (policy_id)
+    ) ENGINE=InnoDB;
+  `);
+}
+
+async function upsertSetting(settingKey, settingValue) {
+  await pool.execute(
+    `
+      INSERT INTO platform_settings (setting_key, setting_json, updated_at)
+      VALUES (?, ?, NOW())
+      ON DUPLICATE KEY UPDATE
+        setting_json = VALUES(setting_json),
+        updated_at = NOW()
+    `,
+    [settingKey, asText(settingValue)]
+  );
 }
 
 async function upsertRule(rule) {
@@ -238,6 +294,39 @@ async function insertAuditEvent(event) {
   );
 }
 
+async function insertIntegrationEvent(event) {
+  await pool.execute(
+    `
+      INSERT INTO platform_integration_events (
+        integration_event_id,
+        policy_id,
+        target_system,
+        event_type,
+        status,
+        payload_json,
+        created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        policy_id = VALUES(policy_id),
+        target_system = VALUES(target_system),
+        event_type = VALUES(event_type),
+        status = VALUES(status),
+        payload_json = VALUES(payload_json),
+        created_at = VALUES(created_at)
+    `,
+    [
+      event.integrationEventId,
+      event.policyId,
+      event.targetSystem,
+      event.eventType,
+      event.status,
+      asText(event.payload || {}),
+      new Date(event.createdAt)
+    ]
+  );
+}
+
 async function loadStateFromDb() {
   const [policyRows] = await pool.query(`
     SELECT
@@ -306,6 +395,49 @@ async function loadStateFromDb() {
     await upsertRule(rule);
   }
 
+  const [settingRows] = await pool.query(`
+    SELECT setting_key, setting_json
+    FROM platform_settings
+  `);
+
+  const settingMap = settingRows.reduce((acc, row) => {
+    acc[row.setting_key] = parseJson(row.setting_json, null);
+    return acc;
+  }, {});
+
+  state.governance = {
+    ...DEFAULT_GOVERNANCE_CONFIG,
+    ...(settingMap.governance_config || {})
+  };
+
+  state.roiAssumptions = {
+    ...DEFAULT_ROI_ASSUMPTIONS,
+    ...(settingMap.roi_assumptions || {})
+  };
+
+  await upsertSetting("governance_config", state.governance);
+  await upsertSetting("roi_assumptions", state.roiAssumptions);
+
+  const [integrationRows] = await pool.query(
+    `
+      SELECT integration_event_id, policy_id, target_system, event_type, status, payload_json, created_at
+      FROM platform_integration_events
+      ORDER BY created_at DESC, integration_event_id DESC
+      LIMIT ?
+    `,
+    [INTEGRATION_MEMORY_CACHE_SIZE]
+  );
+
+  state.integrationEvents = integrationRows.map((row) => ({
+    integrationEventId: row.integration_event_id,
+    policyId: row.policy_id,
+    targetSystem: row.target_system,
+    eventType: row.event_type,
+    status: row.status,
+    payload: parseJson(row.payload_json, {}),
+    createdAt: toIso(row.created_at)
+  }));
+
   const [auditRows] = await pool.query(
     `
       SELECT event_id, policy_id, module, message, timestamp, meta_json
@@ -330,6 +462,12 @@ async function loadStateFromDb() {
 
   const maxAudit = extractMaxCounter(state.auditEvents.map((item) => item.eventId), "AUD-");
   eventCounter = Math.max(1, (maxAudit || 0) + 1);
+
+  const maxIntegration = extractMaxCounter(
+    state.integrationEvents.map((item) => item.integrationEventId),
+    "INT-"
+  );
+  integrationEventCounter = Math.max(1, (maxIntegration || 0) + 1);
 }
 
 async function initializePlatformStore() {
@@ -532,17 +670,26 @@ async function resetPlatformState() {
 
   policyCounter = 1000;
   eventCounter = 1;
+  integrationEventCounter = 1;
   state.policies = [];
   state.rules = createRulesState();
   state.auditEvents = [];
+  state.governance = { ...DEFAULT_GOVERNANCE_CONFIG };
+  state.roiAssumptions = { ...DEFAULT_ROI_ASSUMPTIONS };
+  state.integrationEvents = [];
 
   await pool.query("DELETE FROM platform_audit_events");
+  await pool.query("DELETE FROM platform_integration_events");
   await pool.query("DELETE FROM platform_policies");
   await pool.query("DELETE FROM platform_rules");
+  await pool.query("DELETE FROM platform_settings");
 
   for (const rule of state.rules) {
     await upsertRule(rule);
   }
+
+  await upsertSetting("governance_config", state.governance);
+  await upsertSetting("roi_assumptions", state.roiAssumptions);
 
   await pushAudit("GLOBAL", "Platform", "Platform state reset", {});
 }
@@ -574,6 +721,116 @@ async function persistRulesSnapshot() {
   }
 }
 
+function getGovernanceConfig() {
+  return state.governance;
+}
+
+async function updateGovernanceConfig(patch = {}) {
+  ensureInitialized();
+
+  const next = {
+    ...state.governance,
+    ...patch
+  };
+
+  const validModes = ["validation-only", "human-in-loop", "full-automation"];
+  if (!validModes.includes(next.mode)) {
+    next.mode = state.governance.mode;
+  }
+
+  next.enableValidation = next.enableValidation !== false;
+  next.enableCorrection = Boolean(next.enableCorrection);
+  next.enableRevalidation = Boolean(next.enableRevalidation);
+  next.autoApplyCorrections = Boolean(next.autoApplyCorrections);
+  next.emitIntegrationEvents = next.emitIntegrationEvents !== false;
+
+  const confidence = Number(next.autoApplyMinConfidence);
+  next.autoApplyMinConfidence = Number.isFinite(confidence)
+    ? Math.max(0, Math.min(1, confidence))
+    : state.governance.autoApplyMinConfidence;
+
+  state.governance = next;
+  await upsertSetting("governance_config", state.governance);
+  await pushAudit("GLOBAL", "Governance", "Governance profile updated", state.governance);
+  return state.governance;
+}
+
+function getRoiAssumptions() {
+  return state.roiAssumptions;
+}
+
+async function updateRoiAssumptions(patch = {}) {
+  ensureInitialized();
+
+  const next = {
+    ...state.roiAssumptions,
+    ...patch
+  };
+
+  const toPositiveNumber = (value, fallback) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      return fallback;
+    }
+    return parsed;
+  };
+
+  next.minutesPerAutoCorrection = toPositiveNumber(
+    next.minutesPerAutoCorrection,
+    state.roiAssumptions.minutesPerAutoCorrection
+  );
+  next.reviewMinutesPerSuggestedIssue = toPositiveNumber(
+    next.reviewMinutesPerSuggestedIssue,
+    state.roiAssumptions.reviewMinutesPerSuggestedIssue
+  );
+  next.blockedCaseCostAvoided = toPositiveNumber(
+    next.blockedCaseCostAvoided,
+    state.roiAssumptions.blockedCaseCostAvoided
+  );
+
+  state.roiAssumptions = next;
+  await upsertSetting("roi_assumptions", state.roiAssumptions);
+  await pushAudit("GLOBAL", "ROI", "ROI assumptions updated", state.roiAssumptions);
+  return state.roiAssumptions;
+}
+
+function listIntegrationEvents() {
+  return state.integrationEvents;
+}
+
+function nextIntegrationEventId() {
+  const id = `INT-${integrationEventCounter}`;
+  integrationEventCounter += 1;
+  return id;
+}
+
+async function createIntegrationEvent(event = {}) {
+  ensureInitialized();
+
+  const record = {
+    integrationEventId: nextIntegrationEventId(),
+    policyId: event.policyId || "GLOBAL",
+    targetSystem: event.targetSystem || "PolicyCenter",
+    eventType: event.eventType || "PolicyIntegrityEvaluated",
+    status: event.status || "Published",
+    payload: event.payload || {},
+    createdAt: event.createdAt || new Date().toISOString()
+  };
+
+  state.integrationEvents.unshift(record);
+  if (state.integrationEvents.length > INTEGRATION_MEMORY_CACHE_SIZE) {
+    state.integrationEvents.length = INTEGRATION_MEMORY_CACHE_SIZE;
+  }
+
+  await insertIntegrationEvent(record);
+  await pushAudit(record.policyId, "Integration", `${record.eventType} -> ${record.targetSystem}`, {
+    targetSystem: record.targetSystem,
+    integrationEventId: record.integrationEventId
+  });
+
+  return record;
+}
+
 module.exports = {
   state,
   initializePlatformStore,
@@ -588,5 +845,11 @@ module.exports = {
   resetPlatformState,
   resetRuleOverrides,
   upsertPolicy: upsertPolicyRecord,
-  pushAudit
+  pushAudit,
+  getGovernanceConfig,
+  updateGovernanceConfig,
+  getRoiAssumptions,
+  updateRoiAssumptions,
+  listIntegrationEvents,
+  createIntegrationEvent
 };

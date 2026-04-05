@@ -21,6 +21,7 @@
 
       const modules = [
         { key: "dashboard", label: "Dashboard" },
+        { key: "adoption", label: "Adoption Studio" },
         { key: "workbench", label: "Policy Workbench" },
         { key: "validation", label: "Validation Center" },
         { key: "corrections", label: "Correction Center" },
@@ -32,11 +33,36 @@
 
       const moduleDescriptions = {
         dashboard: "Monitor policy quality, correction outcomes, and enterprise risk posture.",
+        adoption: "Roll out modules safely with governance profiles, ROI proof, and integration readiness evidence.",
         workbench: "Create and manage policy records before validation and governance execution.",
         validation: "Review detected issues across all validation layers and policy records.",
         corrections: "Track applied corrections and clear suggestion queues with controlled actions.",
         audit: "Inspect the timeline of system decisions, rule triggers, and correction events.",
         rules: "Configure validation rules, severity weightings, and execution governance settings."
+      };
+
+      const governanceModes = [
+        { value: "validation-only", label: "Validation Only" },
+        { value: "human-in-loop", label: "Human-in-the-Loop" },
+        { value: "full-automation", label: "Full Automation" }
+      ];
+
+      const integrationTargets = ["PolicyCenter", "BillingCenter"];
+
+      const defaultGovernance = {
+        mode: "full-automation",
+        enableValidation: true,
+        enableCorrection: true,
+        enableRevalidation: true,
+        autoApplyCorrections: true,
+        autoApplyMinConfidence: 0.9,
+        emitIntegrationEvents: true
+      };
+
+      const defaultRoiAssumptions = {
+        minutesPerAutoCorrection: 12,
+        reviewMinutesPerSuggestedIssue: 6,
+        blockedCaseCostAvoided: 220
       };
 
       const defaultForm = {
@@ -172,6 +198,11 @@
         const [batchRunSummary, setBatchRunSummary] = useState(null);
         const [policySearch, setPolicySearch] = useState("");
         const [policySort, setPolicySort] = useState("updated_desc");
+        const [governance, setGovernance] = useState(defaultGovernance);
+        const [roiAssumptions, setRoiAssumptions] = useState(defaultRoiAssumptions);
+        const [roiSummary, setRoiSummary] = useState(null);
+        const [integrationEventLog, setIntegrationEventLog] = useState([]);
+        const [selectedIntegrationTargets, setSelectedIntegrationTargets] = useState(integrationTargets);
         const [validationFilters, setValidationFilters] = useState({
           severity: "",
           status: "",
@@ -194,6 +225,10 @@
           setPolicies(data.policies || []);
           setRules(data.rules || []);
           setAuditEvents(data.auditEvents || []);
+          setGovernance(data.governance || defaultGovernance);
+          setRoiAssumptions(data.roiAssumptions || defaultRoiAssumptions);
+          setRoiSummary(data.roi || null);
+          setIntegrationEventLog(data.integrationEvents || []);
           if (!selectedPolicyId && data.policies && data.policies.length > 0) {
             setSelectedPolicyId(data.policies[0].policyId);
             setForm(data.policies[0].input);
@@ -240,6 +275,81 @@
           } catch (error) {
             setStatusText("Unable to load demo cases");
           }
+        }
+
+        async function saveGovernance(patch) {
+          const response = await fetch("/api/platform/governance", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(patch)
+          });
+
+          if (!response.ok) {
+            setStatusText("Failed to update governance profile");
+            return;
+          }
+
+          const data = await response.json();
+          setGovernance(data.governance || defaultGovernance);
+          setStatusText(`Governance updated: ${(data.governance || {}).mode || "profile"}`);
+          await bootstrap();
+        }
+
+        async function saveRoiAssumptions(patch) {
+          const response = await fetch("/api/platform/roi-assumptions", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(patch)
+          });
+
+          if (!response.ok) {
+            setStatusText("Failed to update ROI assumptions");
+            return;
+          }
+
+          const data = await response.json();
+          setRoiAssumptions(data.assumptions || defaultRoiAssumptions);
+          setRoiSummary(data.roi || null);
+          setStatusText("ROI assumptions updated");
+          await bootstrap();
+        }
+
+        function toggleIntegrationTarget(target) {
+          setSelectedIntegrationTargets((prev) => {
+            if (prev.includes(target)) {
+              return prev.filter((item) => item !== target);
+            }
+            return [...prev, target];
+          });
+        }
+
+        async function publishIntegrationForSelectedPolicy() {
+          if (!selectedPolicyId) {
+            setStatusText("Select a policy first");
+            return;
+          }
+
+          const targets = selectedIntegrationTargets.length > 0
+            ? selectedIntegrationTargets
+            : integrationTargets;
+
+          const response = await fetch(`/api/platform/integration/policies/${selectedPolicyId}/publish`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              actor: form.actor || "ui.user",
+              targets
+            })
+          });
+
+          if (!response.ok) {
+            setStatusText("Failed to publish integration events");
+            return;
+          }
+
+          const data = await response.json();
+          setStatusText(`Integration events published: ${data.count}`);
+          await bootstrap();
         }
 
         function setField(key, value) {
@@ -350,7 +460,10 @@
             const response = await fetch("/api/platform/run-all", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ actor: form.actor || "ui.user" })
+              body: JSON.stringify({
+                actor: form.actor || "ui.user",
+                profile: governance.mode
+              })
             });
 
             if (!response.ok) {
@@ -511,7 +624,10 @@
             const response = await fetch(`/api/platform/policies/${policyId}/run`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ actor: form.actor || "ui.user" })
+              body: JSON.stringify({
+                actor: form.actor || "ui.user",
+                profile: governance.mode
+              })
             });
 
             if (!response.ok) {
@@ -669,6 +785,40 @@
           const autoFixableCount = issues.filter((i) => i.autoFixable).length;
           const autoFixedCount = issues.filter((i) => i.autoFixable && i.status === "Resolved").length;
           const autoFixRate = autoFixableCount > 0 ? Math.round((autoFixedCount / autoFixableCount) * 100) : 0;
+          const threshold = Number(governance.autoApplyMinConfidence || 0);
+          const confidenceTrackedIssues = issues.filter(
+            (item) => item.autoFixable && Number.isFinite(Number(item.correctionConfidence))
+          );
+          const confidencePercent = (value) => Math.round(Number(value || 0) * 100);
+          const avgConfidence = confidenceTrackedIssues.length > 0
+            ? Math.round(
+              confidenceTrackedIssues.reduce((sum, item) => sum + Number(item.correctionConfidence || 0), 0)
+              / confidenceTrackedIssues.length
+              * 100
+            )
+            : 0;
+          const suggestedConfidence = confidenceTrackedIssues.filter((item) => item.status === "Suggested");
+          const resolvedConfidence = confidenceTrackedIssues.filter((item) => item.status === "Resolved");
+          const avgSuggestedConfidence = suggestedConfidence.length > 0
+            ? Math.round(
+              suggestedConfidence.reduce((sum, item) => sum + Number(item.correctionConfidence || 0), 0)
+              / suggestedConfidence.length
+              * 100
+            )
+            : 0;
+          const avgResolvedConfidence = resolvedConfidence.length > 0
+            ? Math.round(
+              resolvedConfidence.reduce((sum, item) => sum + Number(item.correctionConfidence || 0), 0)
+              / resolvedConfidence.length
+              * 100
+            )
+            : 0;
+          const thresholdPassedCount = confidenceTrackedIssues.filter(
+            (item) => Number(item.correctionConfidence || 0) >= threshold
+          ).length;
+          const thresholdQueuedCount = confidenceTrackedIssues.filter(
+            (item) => Number(item.correctionConfidence || 0) < threshold
+          ).length;
           const issueFreq = {};
           const severityBuckets = { Critical: 0, High: 0, Medium: 0, Low: 0 };
           issues.forEach((i) => {
@@ -687,6 +837,9 @@
             ? Math.max(0, Math.round(((criticalIssues - currentCritical) / criticalIssues) * 100))
             : 0;
 
+          const roi = roiSummary?.roi || {};
+          const roiTotals = roiSummary?.totals || {};
+
           return {
             total,
             avgScore,
@@ -697,9 +850,19 @@
             blocked,
             severityBuckets,
             topIssue,
-            criticalReduction
+            criticalReduction,
+            netWeeklyHours: roi.netWeeklyHours || 0,
+            riskCostAvoided: roi.riskCostAvoided || 0,
+            issueReductionPercent: roi.issueReductionPercent || 0,
+            autoCorrections: roiTotals.autoCorrections || 0,
+            autoFixConfidenceThreshold: confidencePercent(threshold),
+            avgConfidence,
+            avgSuggestedConfidence,
+            avgResolvedConfidence,
+            thresholdPassedCount,
+            thresholdQueuedCount
           };
-        }, [policies, issues]);
+        }, [policies, issues, roiSummary, governance]);
 
         const activeModuleDef = useMemo(
           () => modules.find((item) => item.key === activeModule) || modules[0],
@@ -720,6 +883,25 @@
           () => issues.filter((issue) => issue.policyId === selectedPolicyId && issue.status === "Suggested").length,
           [issues, selectedPolicyId]
         );
+
+        const latestCorrectionExamples = useMemo(() => {
+          if (!runResult || !Array.isArray(runResult.corrections) || runResult.corrections.length === 0) {
+            return [];
+          }
+
+          const issueByKey = new Map((runResult.issues || []).map((issue) => [issue.issueKey, issue]));
+
+          return runResult.corrections.slice(0, 5).map((correction) => {
+            const issue = issueByKey.get(correction.issueId);
+            const confidenceRaw = issue ? Number(issue.correctionConfidence) : NaN;
+            const confidence = Number.isFinite(confidenceRaw) ? Math.round(confidenceRaw * 100) : null;
+
+            return {
+              ...correction,
+              confidence
+            };
+          });
+        }, [runResult]);
 
         const visiblePolicies = useMemo(() => {
           const query = policySearch.trim().toLowerCase();
@@ -774,12 +956,36 @@
               <div className="kpi"><span>Critical Issues</span><strong>{dashboard.criticalIssues}</strong></div>
               <div className="kpi"><span>Auto Fix Rate</span><strong>{dashboard.autoFixRate}%</strong></div>
             </div>
+            <div className="kpi-row compact">
+              <div className="kpi"><span>Net Weekly Hours Saved</span><strong>{dashboard.netWeeklyHours}</strong></div>
+              <div className="kpi"><span>Risk Cost Avoided</span><strong>${dashboard.riskCostAvoided}</strong></div>
+              <div className="kpi"><span>Issue Reduction</span><strong>{dashboard.issueReductionPercent}%</strong></div>
+            </div>
             <section className="panel insights-panel">
               <h3>Insights</h3>
               <ul>
                 <li>Most frequent issue: {dashboard.topIssue}</li>
                 <li>Auto-fix success rate: {dashboard.autoFixRate}%</li>
                 <li>Critical issues reduced by: {dashboard.criticalReduction}%</li>
+                <li>Automated corrections completed: {dashboard.autoCorrections}</li>
+              </ul>
+            </section>
+            <section className="panel confidence-panel">
+              <h3>Confidence Transparency</h3>
+              <div className="kpi-row compact">
+                <div className="kpi"><span>Threshold</span><strong>{dashboard.autoFixConfidenceThreshold}%</strong></div>
+                <div className="kpi"><span>Avg Auto-Fix Confidence</span><strong>{dashboard.avgConfidence}%</strong></div>
+                <div className="kpi"><span>Avg Suggested Confidence</span><strong>{dashboard.avgSuggestedConfidence}%</strong></div>
+              </div>
+              <div className="small-note">Resolved confidence: {dashboard.avgResolvedConfidence}% | Above threshold: {dashboard.thresholdPassedCount} | Below threshold: {dashboard.thresholdQueuedCount}</div>
+            </section>
+            <section className="panel strategic-panel">
+              <h3>Strategic Value Positioning</h3>
+              <div className="small-note">Guidewire Policy Integrity Engine (PIE) delivers proactive risk and compliance insurance for policy operations.</div>
+              <ul>
+                <li>Stops defects early, before downstream billing and claims leakage.</li>
+                <li>Supports phased adoption from validation-only to full automation.</li>
+                <li>Maintains transparent audit evidence for regulators and internal control teams.</li>
               </ul>
             </section>
             {batchRunSummary && (
@@ -819,6 +1025,28 @@
                 )}
               </div>
             </div>
+            <section className="panel correction-proof-panel">
+              <h3>Automated Correction Examples (Before/After)</h3>
+              {latestCorrectionExamples.length > 0 ? (
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>Correction</th><th>Old Value</th><th>New Value</th><th>Confidence</th></tr></thead>
+                    <tbody>
+                      {latestCorrectionExamples.map((item, idx) => (
+                        <tr key={`${item.ruleId}-${item.issueId}-${idx}`}>
+                          <td>{item.correctionType}</td>
+                          <td>{item.oldValue}</td>
+                          <td>{item.newValue}</td>
+                          <td>{item.confidence != null ? `${item.confidence}%` : "-"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="small-note">Run a policy with auto-fixable issues to populate correction evidence.</div>
+              )}
+            </section>
             <div className="chart-grid">
               <ChartPanel chartId="severityPie" type="pie" title="Severity Distribution" labels={["Critical", "High", "Medium", "Low"]} values={[
                 dashboard.severityBuckets.Critical,
@@ -950,6 +1178,160 @@
             </section>
           </div>
         );
+
+        const renderAdoptionStudio = () => {
+          const recentIntegrationEvents = integrationEventLog.slice(0, 12);
+          const roi = roiSummary?.roi || {};
+          const totals = roiSummary?.totals || {};
+
+          return (
+            <div className="module-grid adoption-grid">
+              <section className="panel">
+                <h2>1) Modular Rollout Profiles</h2>
+                <div className="profile-cards">
+                  <div className={`profile-card ${governance.mode === "validation-only" ? "active" : ""}`}>
+                    <strong>Validation Only</strong>
+                    <div className="small-note">Detect and classify issues with full audit trace, no automatic correction.</div>
+                  </div>
+                  <div className={`profile-card ${governance.mode === "human-in-loop" ? "active" : ""}`}>
+                    <strong>Human-in-the-Loop</strong>
+                    <div className="small-note">Generate suggestions and require reviewer approval before correction execution.</div>
+                  </div>
+                  <div className={`profile-card ${governance.mode === "full-automation" ? "active" : ""}`}>
+                    <strong>Full Automation</strong>
+                    <div className="small-note">Apply low-risk corrections automatically while preserving governance controls.</div>
+                  </div>
+                </div>
+
+                <div className="form-grid adoption-form">
+                  <div className="field">
+                    <label>Execution Profile</label>
+                    <select value={governance.mode} onChange={(e) => saveGovernance({ mode: e.target.value })}>
+                      {governanceModes.map((mode) => (
+                        <option key={mode.value} value={mode.value}>{mode.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Auto-Apply Minimum Confidence ({Math.round((governance.autoApplyMinConfidence || 0) * 100)}%)</label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={governance.autoApplyMinConfidence || 0}
+                      onChange={(e) => saveGovernance({ autoApplyMinConfidence: Number(e.target.value) })}
+                      disabled={governance.mode !== "full-automation"}
+                    />
+                  </div>
+                </div>
+
+                <div className="toggle-grid">
+                  <label className="inline-check">
+                    <input
+                      type="checkbox"
+                      checked={governance.emitIntegrationEvents !== false}
+                      onChange={(e) => saveGovernance({ emitIntegrationEvents: e.target.checked })}
+                    />
+                    Emit integration events
+                  </label>
+                  <label className="inline-check">
+                    <input
+                      type="checkbox"
+                      checked={governance.autoApplyCorrections !== false}
+                      onChange={(e) => saveGovernance({ autoApplyCorrections: e.target.checked })}
+                      disabled={governance.mode !== "full-automation"}
+                    />
+                    Auto-apply low-risk corrections
+                  </label>
+                </div>
+                <div className="small-note">Current profile controls how run actions execute from Workbench, Run All, and direct validation APIs.</div>
+              </section>
+
+              <section className="panel">
+                <h2>2) Human-in-the-Loop + 3) ROI Proof</h2>
+                <div className="form-grid adoption-form">
+                  <div className="field">
+                    <label>Minutes Saved Per Auto Correction</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={roiAssumptions.minutesPerAutoCorrection}
+                      onChange={(e) => setRoiAssumptions((prev) => ({ ...prev, minutesPerAutoCorrection: Number(e.target.value) }))}
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Review Minutes Per Suggested Issue</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={roiAssumptions.reviewMinutesPerSuggestedIssue}
+                      onChange={(e) => setRoiAssumptions((prev) => ({ ...prev, reviewMinutesPerSuggestedIssue: Number(e.target.value) }))}
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Cost Avoided Per Blocked Case ($)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={roiAssumptions.blockedCaseCostAvoided}
+                      onChange={(e) => setRoiAssumptions((prev) => ({ ...prev, blockedCaseCostAvoided: Number(e.target.value) }))}
+                    />
+                  </div>
+                </div>
+                <div className="actions">
+                  <button className="btn-primary" onClick={() => saveRoiAssumptions(roiAssumptions)}>Save ROI Assumptions</button>
+                </div>
+
+                <div className="kpi-row compact">
+                  <div className="kpi"><span>Net Weekly Hours</span><strong>{roi.netWeeklyHours || 0}</strong></div>
+                  <div className="kpi"><span>Issue Reduction</span><strong>{roi.issueReductionPercent || 0}%</strong></div>
+                  <div className="kpi"><span>Risk Cost Avoided</span><strong>${roi.riskCostAvoided || 0}</strong></div>
+                </div>
+                <div className="small-note">Policies: {totals.policies || 0} | Issues: {totals.issues || 0} | Auto Corrections: {totals.autoCorrections || 0}</div>
+                <div className="small-note">Confidence threshold: {dashboard.autoFixConfidenceThreshold}% | Above threshold: {dashboard.thresholdPassedCount} | Below threshold: {dashboard.thresholdQueuedCount}</div>
+              </section>
+
+              <section className="panel">
+                <h2>4) Integration PoC | 5) Strategic Value | 6) Market Differentiation</h2>
+                <div className="small-note">PIE (Policy Integrity Engine) publishes event-compatible payloads for Guidewire PolicyCenter and BillingCenter with minimal workflow disruption.</div>
+                <div className="toggle-grid">
+                  {integrationTargets.map((target) => (
+                    <label key={target} className="inline-check">
+                      <input
+                        type="checkbox"
+                        checked={selectedIntegrationTargets.includes(target)}
+                        onChange={() => toggleIntegrationTarget(target)}
+                      />
+                      {target}
+                    </label>
+                  ))}
+                </div>
+                <div className="actions">
+                  <button className="btn-secondary" onClick={publishIntegrationForSelectedPolicy} disabled={!selectedPolicyId}>Publish Integration Payload</button>
+                </div>
+
+                <div className="table-wrap">
+                  <table>
+                    <thead><tr><th>Event</th><th>Policy</th><th>Target</th><th>Status</th><th>Time</th></tr></thead>
+                    <tbody>
+                      {recentIntegrationEvents.map((event) => (
+                        <tr key={event.integrationEventId}>
+                          <td>{event.integrationEventId}</td>
+                          <td>{event.policyId}</td>
+                          <td>{event.targetSystem}</td>
+                          <td><StatusBadge value={event.status} /></td>
+                          <td>{event.createdAt ? new Date(event.createdAt).toLocaleTimeString() : "-"}</td>
+                        </tr>
+                      ))}
+                      {recentIntegrationEvents.length === 0 && <tr><td colSpan="5">No integration events published yet</td></tr>}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          );
+        };
 
         const renderValidationCenter = () => (
           <section className="panel">
@@ -1093,6 +1475,7 @@
 
         const moduleContent = {
           dashboard: renderDashboard(),
+          adoption: renderAdoptionStudio(),
           workbench: renderWorkbench(),
           validation: renderValidationCenter(),
           corrections: renderCorrectionCenter(),
@@ -1181,6 +1564,10 @@
                 <div className="context-card">
                   <span>Suggestions</span>
                   <strong>{selectedPolicy ? selectedPolicySuggestionCount : 0}</strong>
+                </div>
+                <div className="context-card">
+                  <span>Governance Profile</span>
+                  <strong>{governance.mode || "-"}</strong>
                 </div>
               </section>
 

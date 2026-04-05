@@ -6,6 +6,14 @@ class PolicyIntegrityEngine {
   static run(policy, actor = "demo.user", options = {}) {
     console.log("\nRunning Policy Integrity Engine...");
     const logs = [];
+    const enableValidation = options.enableValidation !== false;
+    const enableCorrection = options.enableCorrection !== false;
+    const enableRevalidation = options.enableRevalidation !== false;
+    const autoApplyCorrections = options.autoApplyCorrections !== false;
+    const autoApplyMinConfidence = Number.isFinite(Number(options.autoApplyMinConfidence))
+      ? Number(options.autoApplyMinConfidence)
+      : 0;
+    const executionProfile = options.executionProfile || "full-automation";
 
     const logStep = (step, message) => {
       const entry = {
@@ -20,22 +28,39 @@ class PolicyIntegrityEngine {
     };
 
     // 1) Detect + classify.
-    logStep("Detect", "Running validation pass 1");
-    const firstPassIssues = ValidationService.validate(policy, actor, {
-      ruleConfigMap: options.ruleConfigMap
-    });
+    let firstPassIssues = [];
+    if (enableValidation) {
+      logStep("Detect", "Running validation pass 1");
+      firstPassIssues = ValidationService.validate(policy, actor, {
+        ruleConfigMap: options.ruleConfigMap
+      });
+    } else {
+      logStep("Detect", "Validation layer disabled by governance profile");
+    }
+
     policy.integrityScoreBefore = ScoreService.calculate(firstPassIssues);
-    logStep("Classify", `Detected ${firstPassIssues.length} issue(s)`);
+    logStep("Classify", `Profile ${executionProfile} detected ${firstPassIssues.length} issue(s)`);
 
     // 2) Correct/suggest/block.
-    logStep("Correct", "Applying correction governance");
-    CorrectionService.process(policy, firstPassIssues, actor);
+    if (enableCorrection) {
+      logStep("Correct", "Applying correction governance");
+      CorrectionService.process(policy, firstPassIssues, actor, {
+        autoApplyCorrections,
+        autoApplyMinConfidence
+      });
+    } else {
+      logStep("Correct", "Correction layer disabled by governance profile");
+    }
 
     // 3) Re-validate exactly once (dedupe logic avoids duplicate issue records).
-    logStep("Re-validate", "Running validation pass 2");
-    ValidationService.validate(policy, actor, {
-      ruleConfigMap: options.ruleConfigMap
-    });
+    if (enableValidation && enableRevalidation) {
+      logStep("Re-validate", "Running validation pass 2");
+      ValidationService.validate(policy, actor, {
+        ruleConfigMap: options.ruleConfigMap
+      });
+    } else {
+      logStep("Re-validate", "Re-validation skipped for current profile");
+    }
 
     // 4) Final scoring and audit snapshot.
     logStep("Score", "Calculating weighted integrity score");

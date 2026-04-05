@@ -32,8 +32,19 @@ class CorrectionService {
       return
     }
 
-    // Safe default behavior when no specific auto-fix implementation exists.
-    issue.AlreadyCorrected = true
+    if (issue.RuleId == PolicyIntegrityConstants.RULE_POLICY_ADDRESS_MISSING and hasText(policy.CustomerAddressText)) {
+      var oldAddress = hasText(policy.PolicyAddressText) ? policy.PolicyAddressText : "null"
+      var newAddress = policy.CustomerAddressText
+      policy.PolicyAddressText = newAddress
+      addCorrection(policy, issue, "AutoAddressAutofill", oldAddress, newAddress, actor)
+      issue.AlreadyCorrected = true
+      issue.Status = PolicyIntegrityConstants.ISSUE_STATUS_RESOLVED
+      return
+    }
+
+    // If no specific auto-fix exists, move to suggestion queue.
+    issue.CorrectionMode = typekey.PICorrectionMode.getTypeKey("Suggested")
+    issue.Status = PolicyIntegrityConstants.ISSUE_STATUS_SUGGESTED
   }
 
   private function addCorrection(policy: Policy,
@@ -61,5 +72,9 @@ class CorrectionService {
       return 0
     }
     return (policy.CoverageAmount * 0.06) as java.math.BigDecimal
+  }
+
+  private function hasText(value: String): boolean {
+    return value != null and value.trim().length() > 0
   }
 }

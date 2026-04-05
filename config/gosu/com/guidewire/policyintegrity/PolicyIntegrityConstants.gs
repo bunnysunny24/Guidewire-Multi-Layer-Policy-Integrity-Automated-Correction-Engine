@@ -2,6 +2,7 @@ package com.guidewire.policyintegrity
 
 class PolicyIntegrityConstants {
   static final var RULE_PREMIUM_NEGATIVE = "VAL_PREMIUM_NEGATIVE"
+  static final var RULE_POLICY_ADDRESS_MISSING = "VAL_POLICY_ADDRESS_MISSING"
   static final var RULE_COVERAGE_PREMIUM_MISMATCH = "BUS_COVERAGE_PREMIUM_MISMATCH"
   static final var RULE_MISSING_CUSTOMER = "XENT_MISSING_CUSTOMER"
   static final var RULE_BILLING_ACTIVE_ON_CANCELLED = "XSYS_BILLING_ACTIVE_ON_CANCELLED"

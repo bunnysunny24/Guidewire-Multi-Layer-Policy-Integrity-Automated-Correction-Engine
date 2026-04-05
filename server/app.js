@@ -1,6 +1,8 @@
 const express = require("express");
 const path = require("path");
 const PolicyIntegrityEngine = require("../project/engine/PolicyIntegrityEngine");
+const CorrectionService = require("../project/services/CorrectionService");
+const ScoreService = require("../project/services/ScoreService");
 const { mapRequestToPolicy } = require("./policyMapper");
 const { createRuleConfigMap } = require("../project/services/ruleCatalog");
 const {
@@ -16,7 +18,13 @@ const {
   deletePolicy,
   resetPlatformState,
   resetRuleOverrides,
-  pushAudit
+  pushAudit,
+  getGovernanceConfig,
+  updateGovernanceConfig,
+  getRoiAssumptions,
+  updateRoiAssumptions,
+  listIntegrationEvents,
+  createIntegrationEvent
 } = require("./platformStore");
 
 const app = express();
@@ -25,6 +33,9 @@ const MYSQL_HOST = process.env.MYSQL_HOST || "localhost";
 const MYSQL_PORT = Number(process.env.MYSQL_PORT || 3306);
 const MYSQL_USER = process.env.MYSQL_USER || "root";
 const MYSQL_DATABASE = process.env.MYSQL_DATABASE || "guidewire_policy_integrity";
+const VALID_GOVERNANCE_MODES = new Set(["validation-only", "human-in-loop", "full-automation"]);
+const VALID_ISSUE_ACTIONS = new Set(["approve", "reject"]);
+const DEFAULT_INTEGRATION_TARGETS = ["PolicyCenter", "BillingCenter"];
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "../public")));
@@ -106,6 +117,212 @@ function getPlatformRuleMap() {
   return createRuleConfigMap(state.rules);
 }
 
+function normalizeGovernanceMode(mode) {
+  if (!mode) {
+    return null;
+  }
+  const value = String(mode).trim().toLowerCase();
+  if (VALID_GOVERNANCE_MODES.has(value)) {
+    return value;
+  }
+  return null;
+}
+
+function resolveGovernanceForRun(payload = {}) {
+  const base = getGovernanceConfig();
+  const requestedMode = normalizeGovernanceMode(payload.profile || payload.mode);
+  const mode = requestedMode || base.mode || "full-automation";
+
+  const governance = {
+    ...base,
+    mode
+  };
+
+  if (mode === "validation-only") {
+    governance.enableValidation = true;
+    governance.enableCorrection = false;
+    governance.enableRevalidation = false;
+    governance.autoApplyCorrections = false;
+  } else if (mode === "human-in-loop") {
+    governance.enableValidation = true;
+    governance.enableCorrection = true;
+    governance.enableRevalidation = true;
+    governance.autoApplyCorrections = false;
+  } else {
+    governance.enableValidation = governance.enableValidation !== false;
+    governance.enableCorrection = governance.enableCorrection !== false;
+    governance.enableRevalidation = governance.enableRevalidation !== false;
+    governance.autoApplyCorrections = governance.autoApplyCorrections !== false;
+  }
+
+  if (!governance.enableValidation) {
+    governance.enableCorrection = false;
+    governance.enableRevalidation = false;
+  }
+
+  if (!governance.enableCorrection) {
+    governance.autoApplyCorrections = false;
+  }
+
+  const threshold = Number(governance.autoApplyMinConfidence);
+  governance.autoApplyMinConfidence = Number.isFinite(threshold)
+    ? Math.max(0, Math.min(1, threshold))
+    : 0.9;
+
+  governance.emitIntegrationEvents = governance.emitIntegrationEvents !== false;
+  return governance;
+}
+
+function buildEngineOptions(governance) {
+  return {
+    ruleConfigMap: getPlatformRuleMap(),
+    executionProfile: governance.mode,
+    enableValidation: governance.enableValidation,
+    enableCorrection: governance.enableCorrection,
+    enableRevalidation: governance.enableRevalidation,
+    autoApplyCorrections: governance.autoApplyCorrections,
+    autoApplyMinConfidence: governance.autoApplyMinConfidence
+  };
+}
+
+function governanceSnapshot(governance) {
+  return {
+    mode: governance.mode,
+    enableValidation: governance.enableValidation,
+    enableCorrection: governance.enableCorrection,
+    enableRevalidation: governance.enableRevalidation,
+    autoApplyCorrections: governance.autoApplyCorrections,
+    autoApplyMinConfidence: governance.autoApplyMinConfidence,
+    emitIntegrationEvents: governance.emitIntegrationEvents
+  };
+}
+
+function collectAllIssues() {
+  const issues = [];
+  listPolicies().forEach((policy) => {
+    policy.issues.forEach((issue) => {
+      issues.push({
+        policyId: policy.policyId,
+        ...issue
+      });
+    });
+  });
+  return issues;
+}
+
+function collectAllCorrections() {
+  const corrections = [];
+  listPolicies().forEach((policy) => {
+    policy.corrections.forEach((correction) => {
+      corrections.push({
+        policyId: policy.policyId,
+        ...correction
+      });
+    });
+  });
+  return corrections;
+}
+
+function computeRoiSummary() {
+  const policies = listPolicies();
+  const issues = collectAllIssues();
+  const corrections = collectAllCorrections();
+  const assumptions = getRoiAssumptions();
+
+  const resolvedIssues = issues.filter((item) => item.status === "Resolved").length;
+  const suggestedIssues = issues.filter(
+    (item) => item.status === "Suggested" || item.status === "Approved" || item.status === "Rejected"
+  ).length;
+  const blockedPolicies = policies.filter((policy) => policy.status === "BLOCKED").length;
+  const criticalOpen = issues.filter((item) => item.severity === "Critical" && item.status !== "Resolved").length;
+  const autoCorrections = corrections.filter((item) =>
+    String(item.correctionType || "").toLowerCase().startsWith("auto")
+  ).length;
+
+  const avgScore = policies.length
+    ? Math.round(policies.reduce((sum, policy) => sum + (policy.scoreAfter || 0), 0) / policies.length)
+    : 0;
+
+  const weeklyHoursSaved = (autoCorrections * assumptions.minutesPerAutoCorrection) / 60;
+  const weeklyReviewHours = (suggestedIssues * assumptions.reviewMinutesPerSuggestedIssue) / 60;
+  const netWeeklyHours = Math.max(0, weeklyHoursSaved - weeklyReviewHours);
+  const riskCostAvoided = blockedPolicies * assumptions.blockedCaseCostAvoided;
+  const issueReductionPercent = issues.length > 0 ? Math.round((resolvedIssues / issues.length) * 100) : 0;
+
+  return {
+    assumptions,
+    totals: {
+      policies: policies.length,
+      issues: issues.length,
+      corrections: corrections.length,
+      resolvedIssues,
+      suggestedIssues,
+      blockedPolicies,
+      criticalOpen,
+      avgScore,
+      autoCorrections
+    },
+    roi: {
+      weeklyHoursSaved: Number(weeklyHoursSaved.toFixed(2)),
+      weeklyReviewHours: Number(weeklyReviewHours.toFixed(2)),
+      netWeeklyHours: Number(netWeeklyHours.toFixed(2)),
+      issueReductionPercent,
+      riskCostAvoided: Number(riskCostAvoided.toFixed(2))
+    },
+    strategicValue: {
+      headline: "Closed-loop policy governance lowers downstream compliance and servicing risk.",
+      profile: getGovernanceConfig().mode,
+      executiveSummary:
+        "Preventing policy defects before issuance reduces expensive back-office rework and audit exceptions."
+    }
+  };
+}
+
+function createIntegrationPayload(record, runResult, governance, actor, source) {
+  return {
+    source,
+    actor,
+    governance: governanceSnapshot(governance),
+    policy: {
+      policyId: record.policyId,
+      status: record.status,
+      scoreBefore: runResult.scoreBefore,
+      scoreAfter: runResult.scoreAfter,
+      canProceed: runResult.canProceed
+    },
+    metrics: {
+      issueCount: runResult.issues.length,
+      correctionCount: runResult.corrections.length,
+      blockedCount: runResult.blocked.length
+    },
+    generatedAt: new Date().toISOString()
+  };
+}
+
+async function emitIntegrationEvents(record, runResult, governance, actor, source, explicitTargets = []) {
+  if (!governance.emitIntegrationEvents) {
+    return [];
+  }
+
+  const targets = Array.isArray(explicitTargets) && explicitTargets.length > 0
+    ? [...new Set(explicitTargets.map((item) => String(item || "").trim()).filter(Boolean))]
+    : DEFAULT_INTEGRATION_TARGETS;
+
+  const events = [];
+  for (const target of targets) {
+    const event = await createIntegrationEvent({
+      policyId: record.policyId,
+      targetSystem: target,
+      eventType: "PolicyIntegrityEvaluated",
+      status: "Published",
+      payload: createIntegrationPayload(record, runResult, governance, actor, source)
+    });
+    events.push(event);
+  }
+
+  return events;
+}
+
 function computePolicyStatus(runResult) {
   if (!runResult.canProceed) {
     return "BLOCKED";
@@ -139,6 +356,40 @@ function applyRunResult(record, runResult) {
   record.updatedAt = now;
 }
 
+function recomputePolicyDerivedState(policy, options = {}) {
+  const now = new Date().toISOString();
+  const blocked = (policy.issues || []).filter((issue) => issue.status === "Blocked");
+
+  policy.canProceed = blocked.length === 0;
+  policy.scoreAfter = ScoreService.calculate(policy.issues || []);
+  if (!Number.isFinite(Number(policy.scoreBefore))) {
+    policy.scoreBefore = policy.scoreAfter;
+  }
+
+  const nextStatus = blocked.length > 0
+    ? "BLOCKED"
+    : (policy.corrections || []).length > 0
+      ? "CORRECTED"
+      : "VALIDATED";
+
+  policy.statusHistory = Array.isArray(policy.statusHistory) ? policy.statusHistory : [];
+  if (
+    policy.statusHistory.length === 0 ||
+    policy.statusHistory[policy.statusHistory.length - 1].status !== nextStatus
+  ) {
+    policy.statusHistory.push({
+      status: nextStatus,
+      at: now
+    });
+  }
+
+  policy.status = nextStatus;
+  if (options.touchLastRunAt) {
+    policy.lastRunAt = now;
+  }
+  policy.updatedAt = now;
+}
+
 async function addRunAudits(record, runResult) {
   for (const log of runResult.logs) {
     await pushAudit(record.policyId, log.step, log.message, { step: log.step });
@@ -163,10 +414,9 @@ async function addRunAudits(record, runResult) {
 app.post("/api/validate-policy", async (req, res) => {
   try {
     const actor = req.body.actor || "ui.user";
+    const governance = resolveGovernanceForRun(req.body || {});
     const policy = mapRequestToPolicy(req.body);
-    const result = PolicyIntegrityEngine.run(policy, actor, {
-      ruleConfigMap: getPlatformRuleMap()
-    });
+    const result = PolicyIntegrityEngine.run(policy, actor, buildEngineOptions(governance));
 
     const now = new Date().toISOString();
     const persisted = await upsertPolicySnapshot({
@@ -184,6 +434,13 @@ app.post("/api/validate-policy", async (req, res) => {
     });
 
     await addRunAudits(persisted, result);
+    const integrationEvents = await emitIntegrationEvents(
+      persisted,
+      result,
+      governance,
+      actor,
+      "api/validate-policy"
+    );
     await pushAudit(persisted.policyId, "Validation", "Direct validation endpoint executed", {
       source: "api/validate-policy",
       actor
@@ -197,6 +454,8 @@ app.post("/api/validate-policy", async (req, res) => {
       blockedCount: result.blocked.length,
       issues: result.issues,
       corrections: result.corrections,
+      governance: governanceSnapshot(governance),
+      integrationEvents,
       summary: {
         open: result.issues.filter((i) => i.status === "Open").length,
         resolved: result.issues.filter((i) => i.status === "Resolved").length,
@@ -217,8 +476,52 @@ app.get("/api/platform/bootstrap", (req, res) => {
   res.json({
     policies,
     rules: state.rules,
-    auditEvents: state.auditEvents.slice(0, 100)
+    auditEvents: state.auditEvents.slice(0, 100),
+    governance: getGovernanceConfig(),
+    roiAssumptions: getRoiAssumptions(),
+    roi: computeRoiSummary(),
+    integrationEvents: listIntegrationEvents().slice(0, 100)
   });
+});
+
+app.get("/api/platform/governance", (req, res) => {
+  res.json({ governance: getGovernanceConfig() });
+});
+
+app.patch("/api/platform/governance", async (req, res) => {
+  try {
+    const governance = await updateGovernanceConfig(req.body || {});
+    res.json({ governance });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to update governance profile", error: error.message });
+  }
+});
+
+app.get("/api/platform/roi", (req, res) => {
+  res.json(computeRoiSummary());
+});
+
+app.patch("/api/platform/roi-assumptions", async (req, res) => {
+  try {
+    const assumptions = await updateRoiAssumptions(req.body || {});
+    res.json({ assumptions, roi: computeRoiSummary() });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to update ROI assumptions", error: error.message });
+  }
+});
+
+app.get("/api/platform/integration/events", (req, res) => {
+  const { policyId, targetSystem } = req.query;
+  let events = listIntegrationEvents();
+
+  if (policyId) {
+    events = events.filter((event) => event.policyId === policyId);
+  }
+  if (targetSystem) {
+    events = events.filter((event) => event.targetSystem === targetSystem);
+  }
+
+  res.json({ events: events.slice(0, 200) });
 });
 
 app.post("/api/platform/policies", async (req, res) => {
@@ -266,14 +569,20 @@ app.post("/api/platform/policies/:policyId/run", async (req, res) => {
     }
 
     const actor = req.body.actor || "platform.user";
+    const governance = resolveGovernanceForRun(req.body || {});
     const runtimePolicy = mapRequestToPolicy({ ...record.input, id: record.policyId });
-    const runResult = PolicyIntegrityEngine.run(runtimePolicy, actor, {
-      ruleConfigMap: getPlatformRuleMap()
-    });
+    const runResult = PolicyIntegrityEngine.run(runtimePolicy, actor, buildEngineOptions(governance));
 
     applyRunResult(record, runResult);
     await persistPolicySnapshot(record);
     await addRunAudits(record, runResult);
+    const integrationEvents = await emitIntegrationEvents(
+      record,
+      runResult,
+      governance,
+      actor,
+      "api/platform/policies/:policyId/run"
+    );
 
     res.json({
       policy: platformPolicySummary(record),
@@ -283,6 +592,8 @@ app.post("/api/platform/policies/:policyId/run", async (req, res) => {
       scoreBefore: record.scoreBefore,
       scoreAfter: record.scoreAfter,
       canProceed: record.canProceed,
+      governance: governanceSnapshot(governance),
+      integrationEvents,
       summary: {
         open: record.issues.filter((i) => i.status === "Open").length,
         resolved: record.issues.filter((i) => i.status === "Resolved").length,
@@ -298,28 +609,37 @@ app.post("/api/platform/policies/:policyId/run", async (req, res) => {
 app.post("/api/platform/run-all", async (req, res) => {
   try {
     const actor = req.body.actor || "platform.batch";
+    const governance = resolveGovernanceForRun(req.body || {});
     const records = listPolicies();
 
     if (records.length === 0) {
       res.json({
         count: 0,
         runs: [],
-        summary: { validated: 0, corrected: 0, blocked: 0 }
+        summary: { validated: 0, corrected: 0, blocked: 0 },
+        governance: governanceSnapshot(governance)
       });
       return;
     }
 
     const runs = [];
+    let integrationEventCount = 0;
 
     for (const record of records) {
       const runtimePolicy = mapRequestToPolicy({ ...record.input, id: record.policyId });
-      const runResult = PolicyIntegrityEngine.run(runtimePolicy, actor, {
-        ruleConfigMap: getPlatformRuleMap()
-      });
+      const runResult = PolicyIntegrityEngine.run(runtimePolicy, actor, buildEngineOptions(governance));
 
       applyRunResult(record, runResult);
       await persistPolicySnapshot(record);
       await addRunAudits(record, runResult);
+      const integrationEvents = await emitIntegrationEvents(
+        record,
+        runResult,
+        governance,
+        actor,
+        "api/platform/run-all"
+      );
+      integrationEventCount += integrationEvents.length;
 
       runs.push({
         policyId: record.policyId,
@@ -328,7 +648,8 @@ app.post("/api/platform/run-all", async (req, res) => {
         scoreAfter: record.scoreAfter,
         canProceed: record.canProceed,
         issueCount: record.issues.length,
-        correctionCount: record.corrections.length
+        correctionCount: record.corrections.length,
+        integrationEventCount: integrationEvents.length
       });
     }
 
@@ -350,13 +671,17 @@ app.post("/api/platform/run-all", async (req, res) => {
 
     await pushAudit("GLOBAL", "Batch", `Executed run-all for ${runs.length} policy(s)`, {
       count: runs.length,
-      summary
+      summary,
+      profile: governance.mode,
+      integrationEventCount
     });
 
     res.json({
       count: runs.length,
       runs,
-      summary
+      summary,
+      governance: governanceSnapshot(governance),
+      integrationEventCount
     });
   } catch (error) {
     res.status(500).json({ message: "Failed to run all policies", error: error.message });
@@ -472,6 +797,50 @@ app.post("/api/platform/rules/reset", async (req, res) => {
   }
 });
 
+app.post("/api/platform/integration/policies/:policyId/publish", async (req, res) => {
+  try {
+    const policy = getPolicy(req.params.policyId);
+    if (!policy) {
+      res.status(404).json({ message: "Policy not found" });
+      return;
+    }
+
+    const actor = req.body.actor || "integration.user";
+    const targets = Array.isArray(req.body.targets) ? req.body.targets : DEFAULT_INTEGRATION_TARGETS;
+    const governance = getGovernanceConfig();
+    const runResult = {
+      issues: policy.issues,
+      corrections: policy.corrections,
+      scoreBefore: policy.scoreBefore,
+      scoreAfter: policy.scoreAfter,
+      blocked: policy.issues.filter((issue) => issue.status === "Blocked"),
+      canProceed: policy.canProceed
+    };
+
+    const events = await emitIntegrationEvents(
+      policy,
+      runResult,
+      governance,
+      actor,
+      "api/platform/integration/policies/:policyId/publish",
+      targets
+    );
+
+    await pushAudit(policy.policyId, "Integration", `Published ${events.length} integration event(s)`, {
+      targets,
+      actor
+    });
+
+    res.json({
+      policyId: policy.policyId,
+      count: events.length,
+      events
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to publish integration event", error: error.message });
+  }
+});
+
 app.post("/api/platform/policies/:policyId/issues/:issueKey/action", async (req, res) => {
   try {
     const policy = getPolicy(req.params.policyId);
@@ -486,21 +855,41 @@ app.post("/api/platform/policies/:policyId/issues/:issueKey/action", async (req,
       return;
     }
 
-    const action = req.body.action;
-    if (action === "approve" && issue.status === "Suggested") {
-      issue.status = "Approved";
-      policy.updatedAt = new Date().toISOString();
-      await persistPolicySnapshot(policy);
-      await pushAudit(policy.policyId, "Correction", `Suggestion approved for ${issue.ruleId}`);
-    }
-    if (action === "reject" && issue.status === "Suggested") {
-      issue.status = "Rejected";
-      policy.updatedAt = new Date().toISOString();
-      await persistPolicySnapshot(policy);
-      await pushAudit(policy.policyId, "Correction", `Suggestion rejected for ${issue.ruleId}`);
+    const action = String(req.body.action || "").trim().toLowerCase();
+    const actor = req.body.actor || "reviewer.user";
+    if (!VALID_ISSUE_ACTIONS.has(action)) {
+      res.status(400).json({ message: "Invalid action. Allowed: approve, reject" });
+      return;
     }
 
-    res.json({ issue });
+    if (issue.status !== "Suggested") {
+      res.status(409).json({
+        message: "Issue action allowed only for Suggested issues",
+        issue
+      });
+      return;
+    }
+
+    if (action === "approve") {
+      const correction = CorrectionService.applyApprovedSuggestion(policy, issue, actor);
+      recomputePolicyDerivedState(policy);
+      await persistPolicySnapshot(policy);
+      await pushAudit(policy.policyId, "Correction", `Suggestion approved for ${issue.ruleId}`, {
+        issueKey: issue.issueKey,
+        correctionType: correction ? correction.correctionType : null,
+        actor
+      });
+    } else {
+      issue.status = "Rejected";
+      recomputePolicyDerivedState(policy);
+      await persistPolicySnapshot(policy);
+      await pushAudit(policy.policyId, "Correction", `Suggestion rejected for ${issue.ruleId}`, {
+        issueKey: issue.issueKey,
+        actor
+      });
+    }
+
+    res.json({ issue, policy: platformPolicySummary(policy) });
   } catch (error) {
     res.status(500).json({ message: "Failed to process issue action", error: error.message });
   }

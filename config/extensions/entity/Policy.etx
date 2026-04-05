@@ -10,4 +10,10 @@
   <column name="IntegrityScoreAfter" nullok="true" type="int"/>
   <column name="IntegrityLastRunAt" nullok="true" type="datetime"/>
 
+  <column name="PolicyAddressText" nullok="true" type="varchar" size="255"/>
+  <column name="CustomerAddressText" nullok="true" type="varchar" size="255"/>
+  <column name="BillingActive" nullok="false" type="bit" default="false"/>
+  <column name="DuplicateCustomerCandidate" nullok="false" type="bit" default="false"/>
+  <column name="ConfigValid" nullok="false" type="bit" default="true"/>
+
 </extension>

@@ -1,7 +1,12 @@
 const PolicyCorrection = require("../entity/PolicyCorrection");
 
 class CorrectionService {
-  static process(policy, issues, actor = "system") {
+  static process(policy, issues, actor = "system", options = {}) {
+    const autoApplyCorrections = options.autoApplyCorrections !== false;
+    const thresholdRaw = Number(options.autoApplyMinConfidence);
+    const autoApplyMinConfidence = Number.isFinite(thresholdRaw)
+      ? Math.max(0, Math.min(1, thresholdRaw))
+      : 0;
     const appliedFixes = new Set();
 
     for (const issue of issues) {
@@ -10,7 +15,14 @@ class CorrectionService {
       }
 
       if (issue.autoFixable && issue.correctionMode === "Auto") {
-        this.applyAutoFix(policy, issue, actor, appliedFixes);
+        const confidence = Number(issue.correctionConfidence || 0);
+        const canAutoApply = autoApplyCorrections && confidence >= autoApplyMinConfidence;
+        if (canAutoApply) {
+          this.applyAutoFix(policy, issue, actor, appliedFixes);
+        } else {
+          issue.correctionMode = "Suggested";
+          issue.status = "Suggested";
+        }
         continue;
       }
 
@@ -23,6 +35,30 @@ class CorrectionService {
         issue.status = "Blocked";
       }
     }
+  }
+
+  static applyApprovedSuggestion(policy, issue, actor = "reviewer.user") {
+    if (!issue || issue.status !== "Suggested") {
+      return null;
+    }
+
+    issue.status = "Approved";
+    const beforeCount = policy.corrections.length;
+
+    if (issue.autoFixable) {
+      this.applyAutoFix(policy, issue, actor, new Set());
+    }
+
+    const afterCount = policy.corrections.length;
+    if (afterCount > beforeCount) {
+      return policy.corrections[afterCount - 1];
+    }
+
+    if (issue.severity === "Critical") {
+      issue.status = "Blocked";
+    }
+
+    return null;
   }
 
   static applyAutoFix(policy, issue, actor, appliedFixes) {
@@ -90,7 +126,8 @@ class CorrectionService {
       return;
     }
 
-    issue.alreadyCorrected = true;
+    issue.status = "Suggested";
+    issue.correctionMode = "Suggested";
   }
 
   static calculatePremium(policy) {

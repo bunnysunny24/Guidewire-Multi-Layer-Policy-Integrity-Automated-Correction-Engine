@@ -6,7 +6,8 @@
   "main": "server/app.js",
   "scripts": {
     "start": "node server/app.js",
-    "demo": "node project/demo/DemoRunner.js"
+    "demo": "node project/demo/DemoRunner.js",
+    "test": "node --test"
   },
   "dependencies": {
     "express": "^4.21.2",
