@@ -234,6 +234,25 @@
         const [roiSummary, setRoiSummary] = useState(null);
         const [integrationEventLog, setIntegrationEventLog] = useState([]);
         const [selectedIntegrationTargets, setSelectedIntegrationTargets] = useState(integrationTargets);
+        const [integrationFilters, setIntegrationFilters] = useState({
+          search: "",
+          policyId: "",
+          targetSystem: "",
+          status: ""
+        });
+        const [correctionFilters, setCorrectionFilters] = useState({
+          search: "",
+          policyId: "",
+          severity: "",
+          ruleId: ""
+        });
+        const [auditFilters, setAuditFilters] = useState({
+          search: "",
+          policyId: "",
+          module: "",
+          fromDate: "",
+          toDate: ""
+        });
         const [validationFilters, setValidationFilters] = useState({
           severity: "",
           status: "",
@@ -652,6 +671,28 @@
             effectiveTo: ""
           });
 
+          setIntegrationFilters({
+            search: "",
+            policyId: "",
+            targetSystem: "",
+            status: ""
+          });
+
+          setCorrectionFilters({
+            search: "",
+            policyId: "",
+            severity: "",
+            ruleId: ""
+          });
+
+          setAuditFilters({
+            search: "",
+            policyId: "",
+            module: "",
+            fromDate: "",
+            toDate: ""
+          });
+
           await bootstrap();
           await fetchIssues({
             severity: "",
@@ -696,13 +737,12 @@
         }
 
         function exportAuditLog() {
-          const exportEvents = selectedPolicyId
-            ? auditEvents.filter((event) => event.policyId === selectedPolicyId)
-            : auditEvents;
+          const exportEvents = filteredAuditEvents;
+          const exportPolicyId = auditFilters.policyId || selectedPolicyId;
 
           const payload = {
             exportedAt: new Date().toISOString(),
-            selectedPolicyId,
+            selectedPolicyId: exportPolicyId,
             count: exportEvents.length,
             events: exportEvents
           };
@@ -711,7 +751,7 @@
           const url = URL.createObjectURL(blob);
           const anchor = document.createElement("a");
           anchor.href = url;
-          anchor.download = selectedPolicyId ? `${selectedPolicyId}-audit.json` : "platform-audit.json";
+          anchor.download = exportPolicyId ? `${exportPolicyId}-audit.json` : "platform-audit.json";
           anchor.click();
           URL.revokeObjectURL(url);
           setStatusText("Audit timeline exported");
@@ -864,7 +904,8 @@
           }
         }
 
-        async function actOnSuggestion(policyId, issueKey, action) {
+        async function actOnSuggestion(policyId, issueKey, action, options = {}) {
+          const { skipRefresh = false, silent = false } = options;
           const policyForHints = policies.find((item) => item.policyId === policyId);
           const payload = action === "resolve"
             ? {
@@ -882,19 +923,62 @@
 
           if (!response.ok) {
             const error = await response.json().catch(() => ({}));
-            setStatusText(error.message || `Issue action failed: ${action}`);
-            return;
+            if (!silent) {
+              setStatusText(error.message || `Issue action failed: ${action}`);
+            }
+            return false;
           }
 
-          await fetchIssues();
-          await bootstrap();
-          await fetchAudits(policyId);
+          if (!skipRefresh) {
+            await fetchIssues();
+            await bootstrap();
+            await fetchAudits(policyId);
+          }
+
           const messageByAction = {
             approve: "Suggestion approved",
             reject: "Suggestion rejected",
             resolve: "Manual issue resolved"
           };
-          setStatusText(messageByAction[action] || `Issue updated: ${action}`);
+          if (!silent) {
+            setStatusText(messageByAction[action] || `Issue updated: ${action}`);
+          }
+          return true;
+        }
+
+        async function runBulkIssueAction(items, action, successLabel) {
+          if (items.length === 0) {
+            setStatusText(`No records available for bulk ${action}`);
+            return;
+          }
+
+          setRunning(true);
+          let successCount = 0;
+          const touchedPolicies = new Set();
+
+          try {
+            for (const item of items) {
+              const ok = await actOnSuggestion(item.policyId, item.issueKey, action, {
+                skipRefresh: true,
+                silent: true
+              });
+              if (ok) {
+                successCount += 1;
+                touchedPolicies.add(item.policyId);
+              }
+            }
+
+            await fetchIssues();
+            await bootstrap();
+
+            const auditTargetPolicyId = touchedPolicies.size === 1
+              ? Array.from(touchedPolicies)[0]
+              : "";
+            await fetchAudits(auditTargetPolicyId);
+            setStatusText(`${successLabel}: ${successCount}/${items.length}`);
+          } finally {
+            setRunning(false);
+          }
         }
 
         function selectPolicy(policy) {
@@ -930,6 +1014,34 @@
             hasCustomer: "",
             effectiveFrom: "",
             effectiveTo: ""
+          });
+        }
+
+        function clearIntegrationFilters() {
+          setIntegrationFilters({
+            search: "",
+            policyId: "",
+            targetSystem: "",
+            status: ""
+          });
+        }
+
+        function clearCorrectionFilters() {
+          setCorrectionFilters({
+            search: "",
+            policyId: "",
+            severity: "",
+            ruleId: ""
+          });
+        }
+
+        function clearAuditFilters() {
+          setAuditFilters({
+            search: "",
+            policyId: "",
+            module: "",
+            fromDate: "",
+            toDate: ""
           });
         }
 
@@ -1164,6 +1276,123 @@
           return items;
         }, [policies, policySearch, policySort, policyFilters]);
 
+        const integrationTargetOptions = useMemo(() => {
+          const targets = new Set(integrationTargets);
+          integrationEventLog.forEach((event) => {
+            if (event?.targetSystem) {
+              targets.add(event.targetSystem);
+            }
+          });
+          return Array.from(targets);
+        }, [integrationEventLog]);
+
+        const integrationStatusOptions = useMemo(() => {
+          const statuses = new Set(["Published"]);
+          integrationEventLog.forEach((event) => {
+            if (event?.status) {
+              statuses.add(event.status);
+            }
+          });
+          return Array.from(statuses);
+        }, [integrationEventLog]);
+
+        const filteredIntegrationEvents = useMemo(() => {
+          const search = String(integrationFilters.search || "").trim().toLowerCase();
+          return integrationEventLog.filter((event) => {
+            if (integrationFilters.policyId && event.policyId !== integrationFilters.policyId) {
+              return false;
+            }
+            if (integrationFilters.targetSystem && event.targetSystem !== integrationFilters.targetSystem) {
+              return false;
+            }
+            if (integrationFilters.status && event.status !== integrationFilters.status) {
+              return false;
+            }
+            if (!search) {
+              return true;
+            }
+            return (
+              String(event.integrationEventId || "").toLowerCase().includes(search) ||
+              String(event.policyId || "").toLowerCase().includes(search) ||
+              String(event.targetSystem || "").toLowerCase().includes(search)
+            );
+          }).slice(0, 50);
+        }, [integrationEventLog, integrationFilters]);
+
+        const filteredCorrections = useMemo(() => {
+          const search = String(correctionFilters.search || "").trim().toLowerCase();
+          return corrections.filter((correction) => {
+            if (correctionFilters.policyId && correction.policyId !== correctionFilters.policyId) {
+              return false;
+            }
+            if (correctionFilters.ruleId && correction.ruleId !== correctionFilters.ruleId) {
+              return false;
+            }
+            if (correctionFilters.severity) {
+              const issue = issues.find((item) =>
+                item.policyId === correction.policyId && item.ruleId === correction.ruleId
+              );
+              if (issue && issue.severity !== correctionFilters.severity) {
+                return false;
+              }
+            }
+            if (!search) {
+              return true;
+            }
+            return (
+              String(correction.policyId || "").toLowerCase().includes(search) ||
+              String(correction.correctionType || "").toLowerCase().includes(search) ||
+              String(correction.actionTaken || "").toLowerCase().includes(search)
+            );
+          });
+        }, [corrections, correctionFilters, issues]);
+
+        const auditModuleOptions = useMemo(() => {
+          const modules = new Set();
+          auditEvents.forEach((event) => {
+            if (event?.module) {
+              modules.add(event.module);
+            }
+          });
+          return Array.from(modules).sort();
+        }, [auditEvents]);
+
+        const filteredAuditEvents = useMemo(() => {
+          const search = String(auditFilters.search || "").trim().toLowerCase();
+          const fromBoundary = auditFilters.fromDate ? new Date(`${auditFilters.fromDate}T00:00:00`).getTime() : null;
+          const toBoundary = auditFilters.toDate ? new Date(`${auditFilters.toDate}T23:59:59`).getTime() : null;
+
+          return auditEvents.filter((event) => {
+            if (auditFilters.policyId && event.policyId !== auditFilters.policyId) {
+              return false;
+            }
+            if (auditFilters.module && event.module !== auditFilters.module) {
+              return false;
+            }
+
+            if (fromBoundary != null || toBoundary != null) {
+              const eventTime = new Date(event.timestamp).getTime();
+              if (fromBoundary != null && eventTime < fromBoundary) {
+                return false;
+              }
+              if (toBoundary != null && eventTime > toBoundary) {
+                return false;
+              }
+            }
+
+            if (!search) {
+              return true;
+            }
+
+            return (
+              String(event.eventId || "").toLowerCase().includes(search) ||
+              String(event.policyId || "").toLowerCase().includes(search) ||
+              String(event.module || "").toLowerCase().includes(search) ||
+              String(event.message || "").toLowerCase().includes(search)
+            );
+          });
+        }, [auditEvents, auditFilters]);
+
         const workflowNames = ["Detect", "Classify", "Correct", "Re-validate", "Score", "Audit"];
 
         const renderDashboard = () => (
@@ -1286,7 +1515,7 @@
         const renderWorkbench = () => (
           <div className="module-grid two-col">
             <section className="panel">
-              <h2>Policy Creation (Guidewire-Style)</h2>
+              <h2>Policy Creation</h2>
               <div className="scenario-strip">
                 <select value={selectedDemoCase} onChange={(e) => setSelectedDemoCase(e.target.value)}>
                   {demoCases.length === 0 && <option value="">No demo cases loaded</option>}
@@ -1465,7 +1694,7 @@
         );
 
         const renderAdoptionStudio = () => {
-          const recentIntegrationEvents = integrationEventLog.slice(0, 12);
+          const recentIntegrationEvents = filteredIntegrationEvents;
           const roi = roiSummary?.roi || {};
           const totals = roiSummary?.totals || {};
 
@@ -1596,6 +1825,28 @@
                   <button className="btn-secondary" onClick={publishIntegrationForSelectedPolicy} disabled={!selectedPolicyId}>Publish Integration Payload</button>
                 </div>
 
+                <div className="filters-row">
+                  <input
+                    placeholder="Search event id, policy, target"
+                    value={integrationFilters.search}
+                    onChange={(e) => setIntegrationFilters((prev) => ({ ...prev, search: e.target.value }))}
+                  />
+                  <select value={integrationFilters.policyId} onChange={(e) => setIntegrationFilters((prev) => ({ ...prev, policyId: e.target.value }))}>
+                    <option value="">All Policies</option>
+                    {policies.map((policy) => <option key={policy.policyId} value={policy.policyId}>{policy.policyId}</option>)}
+                  </select>
+                  <select value={integrationFilters.targetSystem} onChange={(e) => setIntegrationFilters((prev) => ({ ...prev, targetSystem: e.target.value }))}>
+                    <option value="">All Targets</option>
+                    {integrationTargetOptions.map((target) => <option key={target} value={target}>{target}</option>)}
+                  </select>
+                  <select value={integrationFilters.status} onChange={(e) => setIntegrationFilters((prev) => ({ ...prev, status: e.target.value }))}>
+                    <option value="">All Status</option>
+                    {integrationStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+                  </select>
+                  <button className="btn-secondary" onClick={clearIntegrationFilters}>Clear</button>
+                </div>
+                <div className="small-note">Integration Event Stream: showing {recentIntegrationEvents.length} filtered records</div>
+
                 <div className="table-wrap">
                   <table>
                     <thead><tr><th>Event</th><th>Policy</th><th>Target</th><th>Status</th><th>Time</th></tr></thead>
@@ -1665,19 +1916,41 @@
         );
 
         const renderCorrectionCenter = () => {
-          const suggestions = issues.filter((i) => i.status === "Suggested");
+          const queueSearch = String(correctionFilters.search || "").trim().toLowerCase();
+          const matchesQueueFilters = (issue) => {
+            if (correctionFilters.policyId && issue.policyId !== correctionFilters.policyId) {
+              return false;
+            }
+            if (correctionFilters.severity && issue.severity !== correctionFilters.severity) {
+              return false;
+            }
+            if (correctionFilters.ruleId && !String(issue.ruleId || "").includes(correctionFilters.ruleId)) {
+              return false;
+            }
+            if (!queueSearch) {
+              return true;
+            }
+            return (
+              String(issue.policyId || "").toLowerCase().includes(queueSearch) ||
+              String(issue.ruleId || "").toLowerCase().includes(queueSearch) ||
+              String(issue.description || "").toLowerCase().includes(queueSearch)
+            );
+          };
+
+          const suggestions = issues.filter((i) => i.status === "Suggested" && matchesQueueFilters(i));
           const manualQueue = issues.filter((i) =>
-            i.status === "Blocked" || (i.correctionMode === "Manual" && i.status === "Open")
+            (i.status === "Blocked" || (i.correctionMode === "Manual" && i.status === "Open")) && matchesQueueFilters(i)
           );
+
           return (
             <div className="module-grid two-col">
               <section className="panel">
-                <h2>Corrections Applied</h2>
+                <h2>Corrections Applied ({filteredCorrections.length})</h2>
                 <div className="table-wrap">
                   <table>
                     <thead><tr><th>Policy</th><th>Type</th><th>Action</th><th>By</th></tr></thead>
                     <tbody>
-                      {corrections.map((c, idx) => (
+                      {filteredCorrections.map((c, idx) => (
                         <tr key={`${c.policyId}-${idx}`}>
                           <td>{c.policyId}</td>
                           <td>{c.correctionType}</td>
@@ -1685,22 +1958,61 @@
                           <td>{c.correctedBy}</td>
                         </tr>
                       ))}
-                      {corrections.length === 0 && <tr><td colSpan="4">No corrections yet</td></tr>}
+                      {filteredCorrections.length === 0 && <tr><td colSpan="4">No corrections for selected filters</td></tr>}
                     </tbody>
                   </table>
                 </div>
               </section>
 
               <section className="panel">
+                <h2>Queue Filters and Bulk Actions</h2>
+                <div className="filters-row">
+                  <input
+                    placeholder="Search rule/policy/description"
+                    value={correctionFilters.search}
+                    onChange={(e) => setCorrectionFilters((prev) => ({ ...prev, search: e.target.value }))}
+                  />
+                  <select value={correctionFilters.policyId} onChange={(e) => setCorrectionFilters((prev) => ({ ...prev, policyId: e.target.value }))}>
+                    <option value="">All Policies</option>
+                    {policies.map((policy) => <option key={policy.policyId} value={policy.policyId}>{policy.policyId}</option>)}
+                  </select>
+                  <select value={correctionFilters.severity} onChange={(e) => setCorrectionFilters((prev) => ({ ...prev, severity: e.target.value }))}>
+                    <option value="">All Severity</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option>
+                  </select>
+                  <input
+                    placeholder="Rule id contains"
+                    value={correctionFilters.ruleId}
+                    onChange={(e) => setCorrectionFilters((prev) => ({ ...prev, ruleId: e.target.value }))}
+                  />
+                  <button className="btn-secondary" onClick={clearCorrectionFilters}>Clear</button>
+                </div>
+                <div className="actions">
+                  <button
+                    className="btn-ghost"
+                    onClick={() => runBulkIssueAction(suggestions, "approve", "Bulk approve complete")}
+                    disabled={running || suggestions.length === 0}
+                  >
+                    Approve Visible Suggestions
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    onClick={() => runBulkIssueAction(manualQueue, "resolve", "Bulk manual resolution complete")}
+                    disabled={running || manualQueue.length === 0}
+                  >
+                    Resolve Visible Manual Queue
+                  </button>
+                </div>
+
                 <h2>Suggestion Queue ({suggestions.length})</h2>
                 <div className="table-wrap">
                   <table>
-                    <thead><tr><th>Policy</th><th>Rule</th><th>Status</th><th>Decision</th></tr></thead>
+                    <thead><tr><th>Policy</th><th>Rule</th><th>Severity</th><th>Status</th><th>Decision</th></tr></thead>
                     <tbody>
                       {suggestions.map((s, idx) => (
                         <tr key={`${s.policyId}-${s.issueKey}-${idx}`}>
                           <td>{s.policyId}</td>
                           <td>{s.ruleId}</td>
+                          <td><SeverityBadge value={s.severity} /></td>
                           <td><StatusBadge value={s.status} /></td>
                           <td>
                             <button className="mini" onClick={() => actOnSuggestion(s.policyId, s.issueKey, "approve")}>Approve</button>
@@ -1708,7 +2020,7 @@
                           </td>
                         </tr>
                       ))}
-                      {suggestions.length === 0 && <tr><td colSpan="4">No suggestions pending</td></tr>}
+                      {suggestions.length === 0 && <tr><td colSpan="5">No suggestions pending</td></tr>}
                     </tbody>
                   </table>
                 </div>
@@ -1716,19 +2028,20 @@
                 <h2 style={{ marginTop: "1rem" }}>Manual Resolution Queue ({manualQueue.length})</h2>
                 <div className="table-wrap">
                   <table>
-                    <thead><tr><th>Policy</th><th>Rule</th><th>Status</th><th>Decision</th></tr></thead>
+                    <thead><tr><th>Policy</th><th>Rule</th><th>Severity</th><th>Status</th><th>Decision</th></tr></thead>
                     <tbody>
                       {manualQueue.map((m, idx) => (
                         <tr key={`${m.policyId}-${m.issueKey}-manual-${idx}`}>
                           <td>{m.policyId}</td>
                           <td>{m.ruleId}</td>
+                          <td><SeverityBadge value={m.severity} /></td>
                           <td><StatusBadge value={m.status} /></td>
                           <td>
                             <button className="mini" onClick={() => actOnSuggestion(m.policyId, m.issueKey, "resolve")}>Resolve</button>
                           </td>
                         </tr>
                       ))}
-                      {manualQueue.length === 0 && <tr><td colSpan="4">No manual issues pending</td></tr>}
+                      {manualQueue.length === 0 && <tr><td colSpan="5">No manual issues pending</td></tr>}
                     </tbody>
                   </table>
                 </div>
@@ -1740,9 +2053,30 @@
         const renderAuditLogs = () => (
           <section className="panel">
             <h2>Audit Timeline</h2>
-            <div className="actions"><button className="btn-ghost" onClick={() => fetchAudits(selectedPolicyId)}>Filter Selected Policy</button><button className="btn-secondary" onClick={() => fetchAudits()}>Show All</button><button className="btn-secondary" onClick={exportAuditLog}>Export Audit JSON</button></div>
+            <div className="filters-row">
+              <input
+                placeholder="Search event/module/message/policy"
+                value={auditFilters.search}
+                onChange={(e) => setAuditFilters((prev) => ({ ...prev, search: e.target.value }))}
+              />
+              <select value={auditFilters.policyId} onChange={(e) => setAuditFilters((prev) => ({ ...prev, policyId: e.target.value }))}>
+                <option value="">All Policies</option>
+                {policies.map((policy) => <option key={policy.policyId} value={policy.policyId}>{policy.policyId}</option>)}
+              </select>
+              <select value={auditFilters.module} onChange={(e) => setAuditFilters((prev) => ({ ...prev, module: e.target.value }))}>
+                <option value="">All Modules</option>
+                {auditModuleOptions.map((moduleName) => <option key={moduleName} value={moduleName}>{moduleName}</option>)}
+              </select>
+              <input type="date" value={auditFilters.fromDate} onChange={(e) => setAuditFilters((prev) => ({ ...prev, fromDate: e.target.value }))} />
+              <input type="date" value={auditFilters.toDate} onChange={(e) => setAuditFilters((prev) => ({ ...prev, toDate: e.target.value }))} />
+              <button className="btn-ghost" onClick={() => setAuditFilters((prev) => ({ ...prev, policyId: selectedPolicyId || "" }))} disabled={!selectedPolicyId}>Use Selected Policy</button>
+              <button className="btn-secondary" onClick={clearAuditFilters}>Clear Filters</button>
+              <button className="btn-secondary" onClick={() => fetchAudits()}>Refresh</button>
+              <button className="btn-secondary" onClick={exportAuditLog}>Export Filtered JSON</button>
+            </div>
+            <div className="small-note">Showing {filteredAuditEvents.length} audit events after filters</div>
             <div className="timeline">
-              {auditEvents.map((event) => (
+              {filteredAuditEvents.map((event) => (
                 <div className={`timeline-item mod-${String(event.module || "").toLowerCase().replace(/[^a-z]/g, "")}`} key={event.eventId}>
                   <div className="t-time">{new Date(event.timestamp).toLocaleTimeString()}</div>
                   <div>
@@ -1751,7 +2085,7 @@
                   </div>
                 </div>
               ))}
-              {auditEvents.length === 0 && <div className="small-note">No audit events yet.</div>}
+              {filteredAuditEvents.length === 0 && <div className="small-note">No audit events for selected filters.</div>}
             </div>
           </section>
         );

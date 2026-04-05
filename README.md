@@ -74,6 +74,7 @@ The emphasis is proactive risk reduction, not just correction tooling.
   - KPI cards, severity/status charts, before/after score proof, batch summary, ROI highlights
 - Adoption Studio
   - rollout profile controls, confidence threshold, ROI assumption tuning, integration publish controls
+  - integration stream filters (search, policy, target, status)
 - Policy Workbench
   - create/update/delete policy, run selected policy, run all policies, guided demo, demo case load/seed
   - Guidewire-style policy creation fields (account, LOB/product, term dates, jurisdiction, producer, underwriter, submission channel, billing plan, currency)
@@ -82,8 +83,10 @@ The emphasis is proactive risk reduction, not just correction tooling.
   - filter issues by severity/status/policy/search + correction mode, auto-fixability, and confidence range
 - Correction Center
   - applied correction history + suggestion queue + manual resolution queue
+  - queue filters (policy, severity, rule, search) + bulk approve/resolve actions
 - Audit Logs
-  - timeline + export
+  - timeline + filtered export
+  - filters by policy, module, search, and date range
 - Rule Configuration
   - enable/disable rule, severity override, reset defaults, optional auto re-run
 
@@ -375,7 +378,7 @@ Current suite validates:
   - query: severity, status, ruleId, policyId, search, correctionMode, autoFixable, minConfidence, maxConfidence
 - GET /api/platform/corrections
 - GET /api/platform/audits
-  - query: policyId
+  - query: policyId, module, search, fromDate, toDate, limit
   - returns latest 200 events after optional filtering
 - GET /api/platform/rules
 - PATCH /api/platform/rules/:ruleId
@@ -390,7 +393,7 @@ Current suite validates:
 ### 11.6 Integration PoC operations
 
 - GET /api/platform/integration/events
-  - query: policyId, targetSystem
+  - query: policyId, targetSystem, status, search, limit
   - returns latest 200 events after optional filtering
 - POST /api/platform/integration/policies/:policyId/publish
   - body: optional actor, optional targets array

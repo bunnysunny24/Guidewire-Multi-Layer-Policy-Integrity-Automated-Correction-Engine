@@ -511,7 +511,7 @@ app.patch("/api/platform/roi-assumptions", async (req, res) => {
 });
 
 app.get("/api/platform/integration/events", (req, res) => {
-  const { policyId, targetSystem } = req.query;
+  const { policyId, targetSystem, status, search, limit } = req.query;
   let events = listIntegrationEvents();
 
   if (policyId) {
@@ -520,8 +520,24 @@ app.get("/api/platform/integration/events", (req, res) => {
   if (targetSystem) {
     events = events.filter((event) => event.targetSystem === targetSystem);
   }
+  if (status) {
+    events = events.filter((event) => event.status === status);
+  }
+  if (search) {
+    const needle = String(search).toLowerCase();
+    events = events.filter((event) =>
+      String(event.integrationEventId || "").toLowerCase().includes(needle) ||
+      String(event.policyId || "").toLowerCase().includes(needle) ||
+      String(event.targetSystem || "").toLowerCase().includes(needle)
+    );
+  }
 
-  res.json({ events: events.slice(0, 200) });
+  const limitValue = Number(limit);
+  const safeLimit = Number.isFinite(limitValue)
+    ? Math.max(1, Math.min(1000, Math.floor(limitValue)))
+    : 200;
+
+  res.json({ events: events.slice(0, safeLimit) });
 });
 
 app.get("/api/platform/policies", (req, res) => {
@@ -855,12 +871,46 @@ app.get("/api/platform/corrections", (req, res) => {
 });
 
 app.get("/api/platform/audits", (req, res) => {
-  const { policyId } = req.query;
+  const { policyId, module, search, fromDate, toDate, limit } = req.query;
   let events = state.auditEvents;
+
   if (policyId) {
     events = events.filter((e) => e.policyId === policyId);
   }
-  res.json({ events: events.slice(0, 200) });
+  if (module) {
+    events = events.filter((e) => e.module === module);
+  }
+  if (search) {
+    const needle = String(search).toLowerCase();
+    events = events.filter((event) =>
+      String(event.eventId || "").toLowerCase().includes(needle) ||
+      String(event.policyId || "").toLowerCase().includes(needle) ||
+      String(event.module || "").toLowerCase().includes(needle) ||
+      String(event.message || "").toLowerCase().includes(needle)
+    );
+  }
+
+  const fromBoundary = fromDate ? new Date(`${fromDate}T00:00:00`).getTime() : null;
+  const toBoundary = toDate ? new Date(`${toDate}T23:59:59`).getTime() : null;
+  if (fromBoundary != null || toBoundary != null) {
+    events = events.filter((event) => {
+      const eventTime = new Date(event.timestamp).getTime();
+      if (fromBoundary != null && eventTime < fromBoundary) {
+        return false;
+      }
+      if (toBoundary != null && eventTime > toBoundary) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  const limitValue = Number(limit);
+  const safeLimit = Number.isFinite(limitValue)
+    ? Math.max(1, Math.min(2000, Math.floor(limitValue)))
+    : 200;
+
+  res.json({ events: events.slice(0, safeLimit) });
 });
 
 app.get("/api/platform/rules", (req, res) => {
