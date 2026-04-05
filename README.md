@@ -74,7 +74,10 @@ The emphasis is proactive risk reduction, not just correction tooling.
   - KPI cards, severity/status charts, before/after score proof, batch summary, ROI highlights
 - Adoption Studio
   - rollout profile controls, confidence threshold, ROI assumption tuning, integration publish controls
-  - integration stream filters (search, policy, target, status)
+  - governance draft/apply workflow (edit safely, then commit)
+  - readiness snapshot (active profile, pending draft, threshold, integration flags)
+  - integration stream filters (search, policy, target, status) backed by API queries
+  - integration payload inspector for selected event rows
 - Policy Workbench
   - create/update/delete policy, run selected policy, run all policies, guided demo, demo case load/seed
   - Guidewire-style policy creation fields (account, LOB/product, term dates, jurisdiction, producer, underwriter, submission channel, billing plan, currency)

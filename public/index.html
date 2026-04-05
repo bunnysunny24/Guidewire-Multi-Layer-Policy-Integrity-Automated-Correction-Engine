@@ -230,9 +230,12 @@
           effectiveTo: ""
         });
         const [governance, setGovernance] = useState(defaultGovernance);
+        const [governanceDraft, setGovernanceDraft] = useState(defaultGovernance);
         const [roiAssumptions, setRoiAssumptions] = useState(defaultRoiAssumptions);
         const [roiSummary, setRoiSummary] = useState(null);
         const [integrationEventLog, setIntegrationEventLog] = useState([]);
+        const [selectedIntegrationEvent, setSelectedIntegrationEvent] = useState(null);
+        const [lastIntegrationPublish, setLastIntegrationPublish] = useState(null);
         const [selectedIntegrationTargets, setSelectedIntegrationTargets] = useState(integrationTargets);
         const [integrationFilters, setIntegrationFilters] = useState({
           search: "",
@@ -270,6 +273,7 @@
           fetchIssues();
           fetchCorrections();
           fetchAudits();
+          fetchIntegrationEvents();
           fetchDemoCases();
         }, []);
 
@@ -279,10 +283,18 @@
           setPolicies(data.policies || []);
           setRules(data.rules || []);
           setAuditEvents(data.auditEvents || []);
-          setGovernance(data.governance || defaultGovernance);
+          const nextGovernance = data.governance || defaultGovernance;
+          setGovernance(nextGovernance);
+          setGovernanceDraft(nextGovernance);
           setRoiAssumptions(data.roiAssumptions || defaultRoiAssumptions);
           setRoiSummary(data.roi || null);
-          setIntegrationEventLog(data.integrationEvents || []);
+
+          const hasIntegrationFilters = Object.values(integrationFilters).some((value) => String(value || "").trim() !== "");
+          if (!hasIntegrationFilters) {
+            setIntegrationEventLog(data.integrationEvents || []);
+            setSelectedIntegrationEvent(null);
+          }
+
           if (!selectedPolicyId && data.policies && data.policies.length > 0) {
             setSelectedPolicyId(data.policies[0].policyId);
             setForm(normalizePolicyInput(data.policies[0].input));
@@ -312,6 +324,36 @@
           const res = await fetch(`/api/platform/audits${q}`);
           const data = await res.json();
           setAuditEvents(data.events || []);
+        }
+
+        async function fetchIntegrationEvents(filters = integrationFilters) {
+          try {
+            const params = new URLSearchParams();
+            Object.entries(filters).forEach(([key, value]) => {
+              if (value) {
+                params.append(key, value);
+              }
+            });
+            params.append("limit", "200");
+
+            const query = params.toString();
+            const response = await fetch(`/api/platform/integration/events${query ? `?${query}` : ""}`);
+            if (!response.ok) {
+              throw new Error("Failed to load integration events");
+            }
+
+            const data = await response.json();
+            const events = data.events || [];
+            setIntegrationEventLog(events);
+            setSelectedIntegrationEvent((previous) => {
+              if (!previous) {
+                return null;
+              }
+              return events.find((event) => event.integrationEventId === previous.integrationEventId) || null;
+            });
+          } catch (error) {
+            setStatusText("Failed to load integration events");
+          }
         }
 
         async function fetchDemoCases() {
@@ -344,9 +386,46 @@
           }
 
           const data = await response.json();
-          setGovernance(data.governance || defaultGovernance);
-          setStatusText(`Governance updated: ${(data.governance || {}).mode || "profile"}`);
+          const nextGovernance = data.governance || defaultGovernance;
+          setGovernance(nextGovernance);
+          setGovernanceDraft(nextGovernance);
+          setStatusText(`Governance updated: ${(nextGovernance || {}).mode || "profile"}`);
           await bootstrap();
+        }
+
+        function updateGovernanceDraft(patch) {
+          setGovernanceDraft((prev) => ({ ...prev, ...patch }));
+        }
+
+        async function applyGovernanceDraft() {
+          const keys = [
+            "mode",
+            "enableValidation",
+            "enableCorrection",
+            "enableRevalidation",
+            "autoApplyCorrections",
+            "autoApplyMinConfidence",
+            "emitIntegrationEvents"
+          ];
+
+          const patch = {};
+          keys.forEach((key) => {
+            if (governanceDraft[key] !== governance[key]) {
+              patch[key] = governanceDraft[key];
+            }
+          });
+
+          if (Object.keys(patch).length === 0) {
+            setStatusText("No governance changes to apply");
+            return;
+          }
+
+          await saveGovernance(patch);
+        }
+
+        function resetGovernanceDraft() {
+          setGovernanceDraft(governance);
+          setStatusText("Governance draft reset to active profile");
         }
 
         async function saveRoiAssumptions(patch) {
@@ -402,8 +481,15 @@
           }
 
           const data = await response.json();
+          setLastIntegrationPublish({
+            count: data.count,
+            policyId: selectedPolicyId,
+            targets,
+            at: new Date().toISOString()
+          });
           setStatusText(`Integration events published: ${data.count}`);
           await bootstrap();
+          await fetchIntegrationEvents(integrationFilters);
         }
 
         function setField(key, value) {
@@ -553,6 +639,7 @@
             await fetchIssues();
             await fetchCorrections();
             await fetchAudits();
+            await fetchIntegrationEvents(integrationFilters);
             setStatusText(`Demo pack created: ${demoCases.length} policies`);
           } catch (error) {
             setStatusText("Demo pack creation failed");
@@ -591,6 +678,7 @@
             await fetchIssues();
             await fetchCorrections();
             await fetchAudits();
+            await fetchIntegrationEvents(integrationFilters);
             setActiveModule("dashboard");
           } catch (error) {
             setStatusText("Batch run failed");
@@ -627,6 +715,7 @@
           await fetchIssues();
           await fetchCorrections();
           await fetchAudits();
+          await fetchIntegrationEvents(integrationFilters);
         }
 
         async function resetPlatform() {
@@ -707,6 +796,12 @@
           });
           await fetchCorrections();
           await fetchAudits();
+          await fetchIntegrationEvents({
+            search: "",
+            policyId: "",
+            targetSystem: "",
+            status: ""
+          });
           setStatusText("Platform reset complete");
         }
 
@@ -803,6 +898,7 @@
             await fetchIssues();
             await fetchCorrections();
             await fetchAudits(policyId);
+            await fetchIntegrationEvents(integrationFilters);
             return data;
           } catch (error) {
             setStatusText("Simulation failed");
@@ -1018,12 +1114,15 @@
         }
 
         function clearIntegrationFilters() {
-          setIntegrationFilters({
+          const cleared = {
             search: "",
             policyId: "",
             targetSystem: "",
             status: ""
-          });
+          };
+          setIntegrationFilters(cleared);
+          setSelectedIntegrationEvent(null);
+          fetchIntegrationEvents(cleared);
         }
 
         function clearCorrectionFilters() {
@@ -1153,6 +1252,19 @@
           () => issues.filter((issue) => issue.policyId === selectedPolicyId && issue.status === "Suggested").length,
           [issues, selectedPolicyId]
         );
+
+        const governanceDraftDirty = useMemo(() => {
+          const keys = [
+            "mode",
+            "enableValidation",
+            "enableCorrection",
+            "enableRevalidation",
+            "autoApplyCorrections",
+            "autoApplyMinConfidence",
+            "emitIntegrationEvents"
+          ];
+          return keys.some((key) => governanceDraft[key] !== governance[key]);
+        }, [governanceDraft, governance]);
 
         const lineOfBusinessOptions = useMemo(() => {
           const options = new Set(["PersonalAuto", "CommercialAuto", "Homeowners", "WorkersComp", "GeneralLiability"]);
@@ -1287,7 +1399,7 @@
         }, [integrationEventLog]);
 
         const integrationStatusOptions = useMemo(() => {
-          const statuses = new Set(["Published"]);
+          const statuses = new Set(["Published", "Pending", "Failed"]);
           integrationEventLog.forEach((event) => {
             if (event?.status) {
               statuses.add(event.status);
@@ -1296,28 +1408,7 @@
           return Array.from(statuses);
         }, [integrationEventLog]);
 
-        const filteredIntegrationEvents = useMemo(() => {
-          const search = String(integrationFilters.search || "").trim().toLowerCase();
-          return integrationEventLog.filter((event) => {
-            if (integrationFilters.policyId && event.policyId !== integrationFilters.policyId) {
-              return false;
-            }
-            if (integrationFilters.targetSystem && event.targetSystem !== integrationFilters.targetSystem) {
-              return false;
-            }
-            if (integrationFilters.status && event.status !== integrationFilters.status) {
-              return false;
-            }
-            if (!search) {
-              return true;
-            }
-            return (
-              String(event.integrationEventId || "").toLowerCase().includes(search) ||
-              String(event.policyId || "").toLowerCase().includes(search) ||
-              String(event.targetSystem || "").toLowerCase().includes(search)
-            );
-          }).slice(0, 50);
-        }, [integrationEventLog, integrationFilters]);
+        const filteredIntegrationEvents = integrationEventLog;
 
         const filteredCorrections = useMemo(() => {
           const search = String(correctionFilters.search || "").trim().toLowerCase();
@@ -1703,39 +1794,51 @@
               <section className="panel">
                 <h2>1) Modular Rollout Profiles</h2>
                 <div className="profile-cards">
-                  <div className={`profile-card ${governance.mode === "validation-only" ? "active" : ""}`}>
+                  <div className={`profile-card ${governanceDraft.mode === "validation-only" ? "active" : ""}`}>
                     <strong>Validation Only</strong>
                     <div className="small-note">Detect and classify issues with full audit trace, no automatic correction.</div>
                   </div>
-                  <div className={`profile-card ${governance.mode === "human-in-loop" ? "active" : ""}`}>
+                  <div className={`profile-card ${governanceDraft.mode === "human-in-loop" ? "active" : ""}`}>
                     <strong>Human-in-the-Loop</strong>
                     <div className="small-note">Generate suggestions and require reviewer approval before correction execution.</div>
                   </div>
-                  <div className={`profile-card ${governance.mode === "full-automation" ? "active" : ""}`}>
+                  <div className={`profile-card ${governanceDraft.mode === "full-automation" ? "active" : ""}`}>
                     <strong>Full Automation</strong>
                     <div className="small-note">Apply low-risk corrections automatically while preserving governance controls.</div>
                   </div>
                 </div>
 
+                <div className="kpi-row compact">
+                  <div className="kpi"><span>Active Profile</span><strong>{governance.mode}</strong></div>
+                  <div className="kpi"><span>Draft Profile</span><strong>{governanceDraft.mode}</strong></div>
+                  <div className="kpi"><span>Draft Changes</span><strong>{governanceDraftDirty ? "Pending" : "None"}</strong></div>
+                </div>
+                <div className="small-note">
+                  Readiness snapshot: Auto-Apply {governance.autoApplyCorrections ? "ON" : "OFF"} | Emit Events {governance.emitIntegrationEvents ? "ON" : "OFF"} | Threshold {Math.round((governance.autoApplyMinConfidence || 0) * 100)}%
+                </div>
+                <div className="small-note">
+                  Last Integration Publish: {lastIntegrationPublish ? `${lastIntegrationPublish.count} event(s) for ${lastIntegrationPublish.policyId} at ${new Date(lastIntegrationPublish.at).toLocaleTimeString()}` : "No publish in this session"}
+                </div>
+
                 <div className="form-grid adoption-form">
                   <div className="field">
                     <label>Execution Profile</label>
-                    <select value={governance.mode} onChange={(e) => saveGovernance({ mode: e.target.value })}>
+                    <select value={governanceDraft.mode} onChange={(e) => updateGovernanceDraft({ mode: e.target.value })}>
                       {governanceModes.map((mode) => (
                         <option key={mode.value} value={mode.value}>{mode.label}</option>
                       ))}
                     </select>
                   </div>
                   <div className="field">
-                    <label>Auto-Apply Minimum Confidence ({Math.round((governance.autoApplyMinConfidence || 0) * 100)}%)</label>
+                    <label>Auto-Apply Minimum Confidence ({Math.round((governanceDraft.autoApplyMinConfidence || 0) * 100)}%)</label>
                     <input
                       type="range"
                       min="0"
                       max="1"
                       step="0.05"
-                      value={governance.autoApplyMinConfidence || 0}
-                      onChange={(e) => saveGovernance({ autoApplyMinConfidence: Number(e.target.value) })}
-                      disabled={governance.mode !== "full-automation"}
+                      value={governanceDraft.autoApplyMinConfidence || 0}
+                      onChange={(e) => updateGovernanceDraft({ autoApplyMinConfidence: Number(e.target.value) })}
+                      disabled={governanceDraft.mode !== "full-automation"}
                     />
                   </div>
                 </div>
@@ -1744,22 +1847,26 @@
                   <label className="inline-check">
                     <input
                       type="checkbox"
-                      checked={governance.emitIntegrationEvents !== false}
-                      onChange={(e) => saveGovernance({ emitIntegrationEvents: e.target.checked })}
+                      checked={governanceDraft.emitIntegrationEvents !== false}
+                      onChange={(e) => updateGovernanceDraft({ emitIntegrationEvents: e.target.checked })}
                     />
                     Emit integration events
                   </label>
                   <label className="inline-check">
                     <input
                       type="checkbox"
-                      checked={governance.autoApplyCorrections !== false}
-                      onChange={(e) => saveGovernance({ autoApplyCorrections: e.target.checked })}
-                      disabled={governance.mode !== "full-automation"}
+                      checked={governanceDraft.autoApplyCorrections !== false}
+                      onChange={(e) => updateGovernanceDraft({ autoApplyCorrections: e.target.checked })}
+                      disabled={governanceDraft.mode !== "full-automation"}
                     />
                     Auto-apply low-risk corrections
                   </label>
                 </div>
-                <div className="small-note">Current profile controls how run actions execute from Workbench, Run All, and direct validation APIs.</div>
+                <div className="actions">
+                  <button className="btn-primary" onClick={applyGovernanceDraft} disabled={!governanceDraftDirty}>Apply Governance Changes</button>
+                  <button className="btn-secondary" onClick={resetGovernanceDraft} disabled={!governanceDraftDirty}>Discard Draft</button>
+                </div>
+                <div className="small-note">Current profile controls how run actions execute from Workbench, Run All, and direct validation APIs. Use Apply Governance Changes to commit draft updates.</div>
               </section>
 
               <section className="panel">
@@ -1843,13 +1950,15 @@
                     <option value="">All Status</option>
                     {integrationStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
                   </select>
+                  <button className="btn-ghost" onClick={() => fetchIntegrationEvents(integrationFilters)}>Apply</button>
                   <button className="btn-secondary" onClick={clearIntegrationFilters}>Clear</button>
+                  <button className="btn-secondary" onClick={() => fetchIntegrationEvents(integrationFilters)}>Refresh</button>
                 </div>
                 <div className="small-note">Integration Event Stream: showing {recentIntegrationEvents.length} filtered records</div>
 
                 <div className="table-wrap">
                   <table>
-                    <thead><tr><th>Event</th><th>Policy</th><th>Target</th><th>Status</th><th>Time</th></tr></thead>
+                    <thead><tr><th>Event</th><th>Policy</th><th>Target</th><th>Status</th><th>Time</th><th>Action</th></tr></thead>
                     <tbody>
                       {recentIntegrationEvents.map((event) => (
                         <tr key={event.integrationEventId}>
@@ -1858,11 +1967,26 @@
                           <td>{event.targetSystem}</td>
                           <td><StatusBadge value={event.status} /></td>
                           <td>{event.createdAt ? new Date(event.createdAt).toLocaleTimeString() : "-"}</td>
+                          <td><button className="mini" onClick={() => setSelectedIntegrationEvent(event)}>View Payload</button></td>
                         </tr>
                       ))}
-                      {recentIntegrationEvents.length === 0 && <tr><td colSpan="5">No integration events published yet</td></tr>}
+                      {recentIntegrationEvents.length === 0 && <tr><td colSpan="6">No integration events published yet</td></tr>}
                     </tbody>
                   </table>
+                </div>
+
+                <div className="panel" style={{ marginTop: "0.8rem" }}>
+                  <h3>Selected Integration Payload</h3>
+                  {selectedIntegrationEvent ? (
+                    <>
+                      <div className="small-note">
+                        Event {selectedIntegrationEvent.integrationEventId} | Policy {selectedIntegrationEvent.policyId} | Target {selectedIntegrationEvent.targetSystem}
+                      </div>
+                      <pre className="json-block">{JSON.stringify(selectedIntegrationEvent.payload || {}, null, 2)}</pre>
+                    </>
+                  ) : (
+                    <div className="small-note">Select an integration event row and click View Payload.</div>
+                  )}
                 </div>
               </section>
             </div>

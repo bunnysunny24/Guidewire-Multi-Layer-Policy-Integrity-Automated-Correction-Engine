@@ -1,0 +1,167 @@
+Policy Integrity 3x3 Matrix Test Plan (9 Demo Outcomes)
+
+Goal
+Show all 9 combinations:
+- Policy outcomes: VALIDATED, CORRECTED, BLOCKED
+- Governance modes: Validation Only, Human-in-the-Loop, Full Automation
+
+Where to run
+- Adoption Studio: set governance profile
+- Policy Workbench: create policy + run
+- Correction Center: approve/resolve where required
+
+One-time setup
+1) Open Adoption Studio.
+2) Keep Auto-Apply Minimum Confidence at default (90%) unless noted.
+3) Open Policy Workbench.
+4) For each case below: fill form values, click Create Policy, then click Run.
+5) Record final lifecycle status from Policies table.
+
+Common baseline values (use these unless case says otherwise)
+- Line of Business: PersonalAuto
+- Product Code: PA_STD
+- Offering: Standard
+- Effective Date: 2026-05-01
+- Expiration Date: 2027-05-01
+- Term Type: Annual
+- Jurisdiction: CA
+- Producer Code: PRD-MATRIX
+- Underwriter: UW-MATRIX
+- Submission Channel: Portal
+- Billing Plan: Monthly
+- Currency: USD
+- Actor: matrix.tester
+- Status: Active
+- Has Customer: true
+- Customer Name: Matrix Customer
+- Customer Address: 12 Green Street
+- Policy Address: 12 Green Street
+- Duplicate Candidate: false
+- Billing Active: false
+- ConfigValid: true
+
+====================================================
+A) Validation Only mode (3 outcomes)
+====================================================
+
+A1) Validation Only -> VALIDATED
+- Set governance profile: Validation Only
+- Account Number: MTRX-VO-VAL-01
+- Premium: 8000
+- Coverage: 150000
+- Keep all other baseline values
+- Action: Create Policy -> Run
+- Expected final status: VALIDATED
+
+A2) Validation Only -> CORRECTED (manual resolve path)
+- Set governance profile: Validation Only
+- Account Number: MTRX-VO-COR-01
+- Premium: 8000
+- Coverage: 150000
+- ConfigValid: false
+- Keep all other baseline values
+- Action:
+  1) Create Policy -> Run (will become BLOCKED first)
+  2) Go Correction Center -> Manual Resolution Queue
+  3) Resolve rule BUS_POLICY_CONFIG_INVALID for this policy
+- Expected final status after resolve: CORRECTED
+
+A3) Validation Only -> BLOCKED
+- Set governance profile: Validation Only
+- Account Number: MTRX-VO-BLK-01
+- Premium: 8000
+- Coverage: 150000
+- ConfigValid: false
+- Keep all other baseline values
+- Action: Create Policy -> Run
+- Expected final status: BLOCKED
+
+====================================================
+B) Human-in-the-Loop mode (3 outcomes)
+====================================================
+
+B1) Human-in-the-Loop -> VALIDATED
+- Set governance profile: Human-in-the-Loop
+- Account Number: MTRX-HL-VAL-01
+- Premium: 8000
+- Coverage: 150000
+- Keep all other baseline values
+- Action: Create Policy -> Run
+- Expected final status: VALIDATED
+
+B2) Human-in-the-Loop -> CORRECTED (approve suggestion path)
+- Set governance profile: Human-in-the-Loop
+- Account Number: MTRX-HL-COR-01
+- Premium: -500
+- Coverage: 90000
+- Keep all other baseline values
+- Action:
+  1) Create Policy -> Run (issue becomes Suggested)
+  2) Go Correction Center -> Suggestion Queue
+  3) Approve rule VAL_PREMIUM_NEGATIVE for this policy
+- Expected final status after approve: CORRECTED
+
+B3) Human-in-the-Loop -> BLOCKED
+- Set governance profile: Human-in-the-Loop
+- Account Number: MTRX-HL-BLK-01
+- Premium: 8000
+- Coverage: 150000
+- ConfigValid: false
+- Keep all other baseline values
+- Action: Create Policy -> Run
+- Expected final status: BLOCKED
+
+====================================================
+C) Full Automation mode (3 outcomes)
+====================================================
+
+C1) Full Automation -> VALIDATED
+- Set governance profile: Full Automation
+- Account Number: MTRX-FA-VAL-01
+- Premium: 8000
+- Coverage: 150000
+- Keep all other baseline values
+- Action: Create Policy -> Run
+- Expected final status: VALIDATED
+
+C2) Full Automation -> CORRECTED (auto-fix path)
+- Set governance profile: Full Automation
+- Account Number: MTRX-FA-COR-01
+- Premium: -500
+- Coverage: 90000
+- Keep all other baseline values
+- Action: Create Policy -> Run
+- Expected final status: CORRECTED
+
+C3) Full Automation -> BLOCKED
+- Set governance profile: Full Automation
+- Account Number: MTRX-FA-BLK-01
+- Premium: 8000
+- Coverage: 150000
+- ConfigValid: false
+- Keep all other baseline values
+- Action: Create Policy -> Run
+- Expected final status: BLOCKED
+
+====================================================
+Evidence sheet (fill during demo)
+====================================================
+Use this table for your presentation proof.
+
+- Validation Only x VALIDATED: ____________________
+- Validation Only x CORRECTED: ____________________
+- Validation Only x BLOCKED: ____________________
+
+- Human-in-the-Loop x VALIDATED: ____________________
+- Human-in-the-Loop x CORRECTED: ____________________
+- Human-in-the-Loop x BLOCKED: ____________________
+
+- Full Automation x VALIDATED: ____________________
+- Full Automation x CORRECTED: ____________________
+- Full Automation x BLOCKED: ____________________
+
+Optional SQL proof
+SELECT policy_id, status, updated_at
+FROM platform_policies
+WHERE input_json LIKE '%MTRX-%'
+ORDER BY updated_at DESC;
