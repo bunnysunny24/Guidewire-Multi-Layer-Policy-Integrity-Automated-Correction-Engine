@@ -455,6 +455,13 @@ h3,
   margin-bottom: 8px;
 }
 
+.policy-filters-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -596,7 +603,7 @@ button:disabled {
 .filters-row {
   margin-bottom: 9px;
   display: grid;
-  grid-template-columns: 1.6fr 1fr 1fr 1fr auto auto;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -888,6 +895,7 @@ tbody tr:nth-child(even) {
   .chart-grid,
   .scenario-strip,
   .toolbar-row,
+  .policy-filters-row,
   .context-strip,
   .form-grid,
   .workflow-strip,

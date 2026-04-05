@@ -1,4 +1,5 @@
 const PolicyCorrection = require("../entity/PolicyCorrection");
+const Customer = require("../model/Customer");
 
 class CorrectionService {
   static process(policy, issues, actor = "system", options = {}) {
@@ -42,11 +43,13 @@ class CorrectionService {
       return null;
     }
 
-    issue.status = "Approved";
     const beforeCount = policy.corrections.length;
+    let correction = null;
 
     if (issue.autoFixable) {
-      this.applyAutoFix(policy, issue, actor, new Set());
+      correction = this.applyAutoFix(policy, issue, actor, new Set());
+    } else {
+      correction = this.applySuggestedResolution(policy, issue, actor);
     }
 
     const afterCount = policy.corrections.length;
@@ -54,11 +57,14 @@ class CorrectionService {
       return policy.corrections[afterCount - 1];
     }
 
-    if (issue.severity === "Critical") {
-      issue.status = "Blocked";
+    if (issue.status !== "Resolved") {
+      issue.status = "Approved";
+      if (issue.severity === "Critical") {
+        issue.status = "Blocked";
+      }
     }
 
-    return null;
+    return correction;
   }
 
   static applyAutoFix(policy, issue, actor, appliedFixes) {
@@ -80,25 +86,20 @@ class CorrectionService {
       const newValue = String(this.calculatePremium(policy));
       policy.premium = Number(newValue);
 
-      policy.corrections.push(
-        new PolicyCorrection({
-          issueId: issue.issueKey,
-          ruleId: issue.ruleId,
-          correctionType: "AutoPremiumRecalculation",
-          actionTaken: "Premium recalculated using coverage based formula",
-          oldValue,
-          newValue,
-          correctedAt: now,
-          correctedBy: actor
-        })
-      );
+      const correction = this.addCorrection(policy, {
+        issueId: issue.issueKey,
+        ruleId: issue.ruleId,
+        correctionType: "AutoPremiumRecalculation",
+        actionTaken: "Premium recalculated using coverage based formula",
+        oldValue,
+        newValue,
+        correctedAt: now,
+        correctedBy: actor
+      });
 
-      issue.alreadyCorrected = true;
-      issue.status = "Resolved";
-      issue.correctedAt = now;
-      issue.correctedBy = actor;
+      this.markIssueResolved(issue, now, actor);
       appliedFixes.add("AutoPremiumRecalculation");
-      return;
+      return correction;
     }
 
     if (issue.ruleId === "VAL_POLICY_ADDRESS_MISSING" && policy.customer?.address) {
@@ -106,28 +107,150 @@ class CorrectionService {
       const newValue = String(policy.customer.address);
       policy.address = policy.customer.address;
 
-      policy.corrections.push(
-        new PolicyCorrection({
-          issueId: issue.issueKey,
-          ruleId: issue.ruleId,
-          correctionType: "AutoAddressAutofill",
-          actionTaken: "Policy address copied from customer profile",
-          oldValue,
-          newValue,
-          correctedAt: now,
-          correctedBy: actor
-        })
-      );
+      const correction = this.addCorrection(policy, {
+        issueId: issue.issueKey,
+        ruleId: issue.ruleId,
+        correctionType: "AutoAddressAutofill",
+        actionTaken: "Policy address copied from customer profile",
+        oldValue,
+        newValue,
+        correctedAt: now,
+        correctedBy: actor
+      });
 
-      issue.alreadyCorrected = true;
-      issue.status = "Resolved";
-      issue.correctedAt = now;
-      issue.correctedBy = actor;
-      return;
+      this.markIssueResolved(issue, now, actor);
+      return correction;
+    }
+
+    if (issue.ruleId === "XSYS_BILLING_ACTIVE_ON_CANCELLED" && policy.status === "Cancelled") {
+      const oldValue = String(policy.billingActive);
+      const newValue = "false";
+      policy.billingActive = false;
+
+      const correction = this.addCorrection(policy, {
+        issueId: issue.issueKey,
+        ruleId: issue.ruleId,
+        correctionType: "AutoBillingDeactivation",
+        actionTaken: "Billing deactivated because policy is cancelled",
+        oldValue,
+        newValue,
+        correctedAt: now,
+        correctedBy: actor
+      });
+
+      this.markIssueResolved(issue, now, actor);
+      return correction;
     }
 
     issue.status = "Suggested";
     issue.correctionMode = "Suggested";
+    return null;
+  }
+
+  static applySuggestedResolution(policy, issue, actor) {
+    const now = new Date().toISOString();
+
+    if (issue.ruleId === "XENT_DUPLICATE_CUSTOMER") {
+      const oldValue = String(Boolean(policy.duplicateCustomerCandidate));
+      const newValue = "false";
+      policy.duplicateCustomerCandidate = false;
+
+      const correction = this.addCorrection(policy, {
+        issueId: issue.issueKey,
+        ruleId: issue.ruleId,
+        correctionType: "SuggestedDuplicateResolution",
+        actionTaken: "Duplicate customer candidate reviewed and cleared",
+        oldValue,
+        newValue,
+        correctedAt: now,
+        correctedBy: actor
+      });
+
+      this.markIssueResolved(issue, now, actor);
+      return correction;
+    }
+
+    return null;
+  }
+
+  static applyManualResolution(policy, issue, actor = "reviewer.user", options = {}) {
+    if (!issue) {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+
+    if (issue.ruleId === "BUS_POLICY_CONFIG_INVALID") {
+      const oldValue = String(Boolean(policy.configValid));
+      policy.configValid = true;
+
+      const correction = this.addCorrection(policy, {
+        issueId: issue.issueKey,
+        ruleId: issue.ruleId,
+        correctionType: "ManualConfigNormalization",
+        actionTaken: "Configuration validated and normalized by reviewer",
+        oldValue,
+        newValue: String(Boolean(policy.configValid)),
+        correctedAt: now,
+        correctedBy: actor
+      });
+
+      this.markIssueResolved(issue, now, actor);
+      return correction;
+    }
+
+    if (issue.ruleId === "XENT_MISSING_CUSTOMER") {
+      const fallbackName = options.customerName || policy.customerNameHint || "Recovered Customer";
+      const fallbackAddress = options.customerAddress || policy.customerAddressHint || policy.address || null;
+      const oldValue = policy.customer?.id || "null";
+
+      policy.customer = new Customer({
+        id: `CUST-MAN-${Date.now()}`,
+        name: fallbackName,
+        address: fallbackAddress
+      });
+
+      const correction = this.addCorrection(policy, {
+        issueId: issue.issueKey,
+        ruleId: issue.ruleId,
+        correctionType: "ManualCustomerLinkResolution",
+        actionTaken: "Customer linked by reviewer resolution",
+        oldValue,
+        newValue: policy.customer.id,
+        correctedAt: now,
+        correctedBy: actor
+      });
+
+      this.markIssueResolved(issue, now, actor);
+      return correction;
+    }
+
+    const correction = this.addCorrection(policy, {
+      issueId: issue.issueKey,
+      ruleId: issue.ruleId,
+      correctionType: "ManualIssueOverride",
+      actionTaken: "Manual reviewer override applied",
+      oldValue: issue.status,
+      newValue: "Resolved",
+      correctedAt: now,
+      correctedBy: actor
+    });
+
+    this.markIssueResolved(issue, now, actor);
+    return correction;
+  }
+
+  static addCorrection(policy, payload) {
+    const correction = new PolicyCorrection(payload);
+    policy.corrections.push(correction);
+    return correction;
+  }
+
+  static markIssueResolved(issue, correctedAt, correctedBy) {
+    issue.alreadyCorrected = true;
+    issue.status = "Resolved";
+    issue.correctedAt = correctedAt;
+    issue.correctedBy = correctedBy;
   }
 
   static calculatePremium(policy) {

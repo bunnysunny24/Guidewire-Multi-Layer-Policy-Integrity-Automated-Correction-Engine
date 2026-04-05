@@ -104,8 +104,9 @@ class ValidationService {
         severity: "High",
         ruleId: "XSYS_BILLING_ACTIVE_ON_CANCELLED",
         issueKey: "billing.active.cancelled",
-        autoFixable: false,
-        correctionMode: "Manual"
+        autoFixable: true,
+        correctionMode: "Auto",
+        correctionConfidence: 0.92
       });
     }
 

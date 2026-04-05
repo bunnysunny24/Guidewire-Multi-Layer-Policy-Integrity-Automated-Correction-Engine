@@ -34,7 +34,7 @@ const MYSQL_PORT = Number(process.env.MYSQL_PORT || 3306);
 const MYSQL_USER = process.env.MYSQL_USER || "root";
 const MYSQL_DATABASE = process.env.MYSQL_DATABASE || "guidewire_policy_integrity";
 const VALID_GOVERNANCE_MODES = new Set(["validation-only", "human-in-loop", "full-automation"]);
-const VALID_ISSUE_ACTIONS = new Set(["approve", "reject"]);
+const VALID_ISSUE_ACTIONS = new Set(["approve", "reject", "resolve"]);
 const DEFAULT_INTEGRATION_TARGETS = ["PolicyCenter", "BillingCenter"];
 
 app.use(express.json());
@@ -524,6 +524,84 @@ app.get("/api/platform/integration/events", (req, res) => {
   res.json({ events: events.slice(0, 200) });
 });
 
+app.get("/api/platform/policies", (req, res) => {
+  const {
+    search,
+    lifecycleStatus,
+    policyState,
+    lineOfBusiness,
+    producerCode,
+    jurisdiction,
+    hasCustomer,
+    effectiveFrom,
+    effectiveTo
+  } = req.query;
+
+  const toLower = (value) => String(value || "").trim().toLowerCase();
+  let policies = listPolicies();
+
+  if (lifecycleStatus) {
+    policies = policies.filter((policy) => String(policy.status || "") === String(lifecycleStatus));
+  }
+
+  if (policyState) {
+    policies = policies.filter((policy) => String(policy.input?.status || "") === String(policyState));
+  }
+
+  if (lineOfBusiness) {
+    policies = policies.filter((policy) =>
+      String(policy.input?.lineOfBusiness || "") === String(lineOfBusiness)
+    );
+  }
+
+  if (producerCode) {
+    const producerNeedle = toLower(producerCode);
+    policies = policies.filter((policy) =>
+      toLower(policy.input?.producerCode).includes(producerNeedle)
+    );
+  }
+
+  if (jurisdiction) {
+    const jurisdictionNeedle = toLower(jurisdiction);
+    policies = policies.filter((policy) =>
+      toLower(policy.input?.jurisdiction).includes(jurisdictionNeedle)
+    );
+  }
+
+  if (hasCustomer === "true" || hasCustomer === "false") {
+    const requiredValue = hasCustomer === "true";
+    policies = policies.filter((policy) => Boolean(policy.input?.hasCustomer) === requiredValue);
+  }
+
+  if (effectiveFrom) {
+    policies = policies.filter((policy) => {
+      const effective = String(policy.input?.effectiveDate || "");
+      return effective && effective >= String(effectiveFrom);
+    });
+  }
+
+  if (effectiveTo) {
+    policies = policies.filter((policy) => {
+      const effective = String(policy.input?.effectiveDate || "");
+      return effective && effective <= String(effectiveTo);
+    });
+  }
+
+  if (search) {
+    const needle = toLower(search);
+    policies = policies.filter((policy) =>
+      toLower(policy.policyId).includes(needle) ||
+      toLower(policy.status).includes(needle) ||
+      toLower(policy.input?.customerName).includes(needle) ||
+      toLower(policy.input?.accountNumber).includes(needle) ||
+      toLower(policy.input?.producerCode).includes(needle)
+    );
+  }
+
+  const summaries = policies.map(platformPolicySummary);
+  res.json({ count: summaries.length, policies: summaries });
+});
+
 app.post("/api/platform/policies", async (req, res) => {
   try {
     const payload = req.body || {};
@@ -698,7 +776,17 @@ app.post("/api/platform/reset", async (req, res) => {
 });
 
 app.get("/api/platform/issues", (req, res) => {
-  const { severity, ruleId, policyId, search, status } = req.query;
+  const {
+    severity,
+    ruleId,
+    policyId,
+    search,
+    status,
+    correctionMode,
+    autoFixable,
+    minConfidence,
+    maxConfidence
+  } = req.query;
   let issues = [];
 
   listPolicies().forEach((policy) => {
@@ -723,6 +811,24 @@ app.get("/api/platform/issues", (req, res) => {
   if (status) {
     issues = issues.filter((i) => i.status === status);
   }
+  if (correctionMode) {
+    issues = issues.filter((i) => i.correctionMode === correctionMode);
+  }
+  if (autoFixable === "true" || autoFixable === "false") {
+    const expected = autoFixable === "true";
+    issues = issues.filter((i) => Boolean(i.autoFixable) === expected);
+  }
+
+  const minConfidenceValue = Number(minConfidence);
+  if (Number.isFinite(minConfidenceValue)) {
+    issues = issues.filter((i) => Number.isFinite(Number(i.correctionConfidence)) && Number(i.correctionConfidence) >= minConfidenceValue);
+  }
+
+  const maxConfidenceValue = Number(maxConfidence);
+  if (Number.isFinite(maxConfidenceValue)) {
+    issues = issues.filter((i) => Number.isFinite(Number(i.correctionConfidence)) && Number(i.correctionConfidence) <= maxConfidenceValue);
+  }
+
   if (search) {
     const s = String(search).toLowerCase();
     issues = issues.filter((i) =>
@@ -858,19 +964,19 @@ app.post("/api/platform/policies/:policyId/issues/:issueKey/action", async (req,
     const action = String(req.body.action || "").trim().toLowerCase();
     const actor = req.body.actor || "reviewer.user";
     if (!VALID_ISSUE_ACTIONS.has(action)) {
-      res.status(400).json({ message: "Invalid action. Allowed: approve, reject" });
-      return;
-    }
-
-    if (issue.status !== "Suggested") {
-      res.status(409).json({
-        message: "Issue action allowed only for Suggested issues",
-        issue
-      });
+      res.status(400).json({ message: "Invalid action. Allowed: approve, reject, resolve" });
       return;
     }
 
     if (action === "approve") {
+      if (issue.status !== "Suggested") {
+        res.status(409).json({
+          message: "Approve action allowed only for Suggested issues",
+          issue
+        });
+        return;
+      }
+
       const correction = CorrectionService.applyApprovedSuggestion(policy, issue, actor);
       recomputePolicyDerivedState(policy);
       await persistPolicySnapshot(policy);
@@ -879,12 +985,50 @@ app.post("/api/platform/policies/:policyId/issues/:issueKey/action", async (req,
         correctionType: correction ? correction.correctionType : null,
         actor
       });
-    } else {
+    } else if (action === "reject") {
+      if (issue.status !== "Suggested") {
+        res.status(409).json({
+          message: "Reject action allowed only for Suggested issues",
+          issue
+        });
+        return;
+      }
+
       issue.status = "Rejected";
       recomputePolicyDerivedState(policy);
       await persistPolicySnapshot(policy);
       await pushAudit(policy.policyId, "Correction", `Suggestion rejected for ${issue.ruleId}`, {
         issueKey: issue.issueKey,
+        actor
+      });
+    } else {
+      const validStatuses = new Set(["Blocked", "Open", "Suggested", "Approved"]);
+      if (!validStatuses.has(issue.status)) {
+        res.status(409).json({
+          message: "Resolve action allowed only for unresolved issues",
+          issue
+        });
+        return;
+      }
+
+      const correction = CorrectionService.applyManualResolution(policy, issue, actor, {
+        customerName: req.body.customerName,
+        customerAddress: req.body.customerAddress
+      });
+
+      if (!correction) {
+        res.status(422).json({
+          message: "Manual resolution could not be applied for this issue",
+          issue
+        });
+        return;
+      }
+
+      recomputePolicyDerivedState(policy);
+      await persistPolicySnapshot(policy);
+      await pushAudit(policy.policyId, "Correction", `Issue resolved manually for ${issue.ruleId}`, {
+        issueKey: issue.issueKey,
+        correctionType: correction.correctionType,
         actor
       });
     }

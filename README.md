@@ -34,6 +34,7 @@ This allows incremental adoption instead of all-or-nothing rollout.
 
 - Suggested issues can be approved/rejected.
 - Approval path supports correction execution for auto-fixable suggestions.
+- Manual/blocked issues can be resolved by reviewer action when deterministic manual resolution is available.
 - Confidence threshold controls when auto-fix is allowed.
 
 ### 2.3 ROI evidence generation
@@ -75,10 +76,12 @@ The emphasis is proactive risk reduction, not just correction tooling.
   - rollout profile controls, confidence threshold, ROI assumption tuning, integration publish controls
 - Policy Workbench
   - create/update/delete policy, run selected policy, run all policies, guided demo, demo case load/seed
+  - Guidewire-style policy creation fields (account, LOB/product, term dates, jurisdiction, producer, underwriter, submission channel, billing plan, currency)
+  - advanced policy filters (lifecycle status, policy state, LOB, customer-linked flag, producer, jurisdiction, effective date range)
 - Validation Center
-  - filter issues by severity/status/policy/search
+  - filter issues by severity/status/policy/search + correction mode, auto-fixability, and confidence range
 - Correction Center
-  - applied correction history + suggestion queue with approve/reject
+  - applied correction history + suggestion queue + manual resolution queue
 - Audit Logs
   - timeline + export
 - Rule Configuration
@@ -319,6 +322,10 @@ Current suite validates:
 - validation-only no-correction behavior,
 - critical blocking behavior,
 - reviewer approval flow for suggested auto-fixable issues.
+- full-automation billing deactivation for cancelled policies,
+- duplicate-customer suggestion approval resolution path,
+- manual resolution for blocked invalid configuration issues,
+- manual resolution for missing-customer issues.
 
 ## 11. API Reference
 
@@ -345,7 +352,14 @@ Current suite validates:
 
 ### 11.4 Policy operations
 
+- GET /api/platform/policies
+  - query: `search`, `lifecycleStatus`, `policyState`, `lineOfBusiness`, `producerCode`, `jurisdiction`, `hasCustomer`, `effectiveFrom`, `effectiveTo`
 - POST /api/platform/policies
+  - payload supports Guidewire-style metadata fields in addition to simulation fields:
+    - `accountNumber`, `lineOfBusiness`, `productCode`, `offering`, `termType`
+    - `effectiveDate`, `expirationDate`, `jurisdiction`
+    - `producerCode`, `underwriter`, `submissionChannel`, `billingPlan`, `currency`
+    - customer and simulation fields (`hasCustomer`, `customerName`, `customerAddress`, `policyAddress`, `premium`, `coverage`, etc.)
 - PUT /api/platform/policies/:policyId
 - DELETE /api/platform/policies/:policyId
 - POST /api/platform/policies/:policyId/run
@@ -358,7 +372,7 @@ Current suite validates:
 ### 11.5 Issue/correction/audit/rule operations
 
 - GET /api/platform/issues
-  - query: severity, status, ruleId, policyId, search
+  - query: severity, status, ruleId, policyId, search, correctionMode, autoFixable, minConfidence, maxConfidence
 - GET /api/platform/corrections
 - GET /api/platform/audits
   - query: policyId
@@ -367,9 +381,10 @@ Current suite validates:
 - PATCH /api/platform/rules/:ruleId
 - POST /api/platform/rules/reset
 - POST /api/platform/policies/:policyId/issues/:issueKey/action
-  - body: action = approve | reject, optional actor
+  - body: action = approve | reject | resolve, optional actor, optional customerName/customerAddress for manual customer-link resolution
   - returns `400` for invalid action values
-  - returns `409` when issue status is not `Suggested`
+  - returns `409` when action is not valid for the issue status
+  - returns `422` when a manual resolution is requested but cannot be applied
   - successful response returns both updated issue and policy summary
 
 ### 11.6 Integration PoC operations
@@ -507,6 +522,8 @@ When user clicks **Validate Policy**, **Run**, or **Run All**, this is what happ
 - Profile-based execution behavior.
 - Threshold-based auto-apply for low-risk auto-fix rules.
 - Human suggestion queue and approve/reject actions.
+- Cross-system auto-fix for cancelled policies with active billing (`AutoBillingDeactivation`).
+- Reviewer approval flow can resolve duplicate-customer suggestions (`SuggestedDuplicateResolution`).
 - Integration event toggle and target selection.
 
 ### 18.3 UI features
@@ -516,6 +533,7 @@ When user clicks **Validate Policy**, **Run**, or **Run All**, this is what happ
 - Policy Workbench with policy CRUD, run single, run all, reset, export snapshot.
 - Validation Center with filterable issue table.
 - Correction Center with applied corrections and suggestion queue actions.
+- Correction Center with applied corrections, suggestion queue, and manual resolution queue.
 - Audit Logs with timeline and export.
 - Rule Configuration with live override and optional auto re-run.
 
@@ -649,12 +667,18 @@ Capabilities:
 - View applied corrections history.
 - Review suggestion queue.
 - Approve/reject suggestions.
+- Resolve blocked/manual issues through reviewer-driven manual resolution action.
 
 Behavior details:
 
-- Only `Suggested` issues can be actioned.
+- `approve` and `reject` require issue status `Suggested`.
+- `resolve` is used for blocked/manual unresolved issues.
 - Invalid action values return `400`.
-- Action on non-`Suggested` issue returns `409`.
+- Invalid action/state combinations return `409`.
+- Unsupported manual resolution attempts return `422`.
+- Approving `XENT_DUPLICATE_CUSTOMER` clears duplicate candidate flag and records a correction.
+- Resolving `BUS_POLICY_CONFIG_INVALID` applies `ManualConfigNormalization`.
+- Resolving `XENT_MISSING_CUSTOMER` applies `ManualCustomerLinkResolution` (uses customer hints or provided customer payload).
 
 ### 20.6 Audit Logs
 
@@ -746,6 +770,25 @@ Expected result:
 Expected result:
 
 - Issue `XENT_DUPLICATE_CUSTOMER` in `Suggested` status.
+- On approval from Correction Center, issue resolves and correction `SuggestedDuplicateResolution` is recorded.
+
+### 21.5 Cancelled billing auto-fix scenario
+
+- `premium`: `6000`
+- `coverage`: `100000`
+- `status`: `Cancelled`
+- `hasCustomer`: `true`
+- `customerAddress`: `12 Green Street`
+- `policyAddress`: `12 Green Street`
+- `duplicateCustomerCandidate`: `false`
+- `billingActive`: `true`
+- `configValid`: `true`
+
+Expected result:
+
+- Status: `CORRECTED`
+- Issue `XSYS_BILLING_ACTIVE_ON_CANCELLED` resolved
+- Correction `AutoBillingDeactivation`
 
 ## 22. Graph Interpretation Guide
 
@@ -883,6 +926,10 @@ Current automated tests verify:
 - Validation-only no-correction behavior.
 - Critical blocking behavior.
 - Suggestion approval applying correction.
+- Full-automation billing deactivation for cancelled policies.
+- Duplicate-customer suggestion approval resolution path.
+- Manual resolution for blocked invalid configuration issues.
+- Manual resolution for blocked missing-customer issues.
 
 ## 26. Productionization Checklist
 
